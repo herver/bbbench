@@ -1,0 +1,29 @@
+package main
+
+import "os"
+
+func main() {
+	initLoggerFromEnv()
+
+	if len(os.Args) < 2 {
+		printHelp()
+		os.Exit(1)
+	}
+
+	switch os.Args[1] {
+	case "generate":
+		exitWithError(runGenerate(os.Args[2:]))
+	case "validate-templates":
+		exitWithError(runValidateTemplates(os.Args[2:]))
+	case "doctor":
+		exitWithError(runDoctor(os.Args[2:]))
+	case "completion":
+		exitWithError(runCompletion(os.Args[2:]))
+	case "help", "-h", "--help":
+		printHelp()
+	default:
+		logger.Error("unknown command", "cmd", os.Args[1])
+		printHelp()
+		os.Exit(1)
+	}
+}

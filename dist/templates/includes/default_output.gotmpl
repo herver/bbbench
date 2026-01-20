@@ -1,0 +1,25 @@
+    -
+        index: {{ .WorkloadIndex }}
+        manufacturer: "{{ .Manufacturer }}"
+        capacity: {{ index .Disk "capacity" }}
+        disk_model: "{{ index .Disk "model" }}"
+        serial: "{{ .Serial }}"
+        path: "{{ index .Disk "path" }}"
+        iodepth: 128
+        numjobs: {{ index .WorkloadDef.Process .ProcessType }}
+        bs: {{ .WorkloadDef.Blocksize }}
+        rw: "{{ .ProcessType }}"
+{{- if ne .WCE nil }}
+{{- $wce := deref .WCE }}
+        wce: {{ ternary "True" "False" $wce }}
+{{- end }}
+{{- if gt .WorkloadDef.Duration 0 }}
+        duration: {{ .WorkloadDef.Duration }}
+{{- end }}
+{{- if .WorkloadDef.WriteLog }}
+        write_bw_log: "{{ .Manufacturer }}_{{ index .Disk "model" }}_{{ .WorkloadDef.Duration }}seconds_iodepth128_direct_{{ .WorkloadDef.Blocksize }}_{{ .Workload }}_{{ .Serial }}_{{ .ProcessType }}_bw.{{ .Host }}"
+        write_iops_log: "{{ .Manufacturer }}_{{ index .Disk "model" }}_{{ .WorkloadDef.Duration }}seconds_iodepth128_direct_{{ .WorkloadDef.Blocksize }}_{{ .Workload }}_{{ .Serial }}_{{ .ProcessType }}_iops.{{ .Host }}"
+{{- end }}
+{{- if .WorkloadDef.RandomDistribution }}
+        random_distribution: "{{ .WorkloadDef.RandomDistribution }}"
+{{- end }}

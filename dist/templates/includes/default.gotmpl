@@ -1,0 +1,18 @@
+
+filename={{ index .Disk "path" }}
+numjobs={{ index .WorkloadDef.Process .ProcessType }}
+bs={{ .WorkloadDef.Blocksize }}
+rw={{ .ProcessType }}
+{{- if gt .WorkloadDef.Duration 0 }}
+time_based
+runtime={{ .WorkloadDef.Duration }}
+{{- end }}
+{{- if .WorkloadDef.RandomDistribution }}
+random_distribution={{ .WorkloadDef.RandomDistribution }} 
+
+{{- end }}
+{{- if .WorkloadDef.WriteLog }}
+# write directives
+write_bw_log={{ .Manufacturer }}_{{ index .Disk "model" }}_{{ .WorkloadDef.Duration }}seconds_iodepth128_direct_{{ .WorkloadDef.Blocksize }}_{{ .Workload }}_{{ .Serial }}_{{ .ProcessType }}_bw.{{ .Host }}
+write_iops_log={{ .Manufacturer }}_{{ index .Disk "model" }}_{{ .WorkloadDef.Duration }}seconds_iodepth128_direct_{{ .WorkloadDef.Blocksize }}_{{ .Workload }}_{{ .Serial }}_{{ .ProcessType }}_iops.{{ .Host }}
+{{- end }}

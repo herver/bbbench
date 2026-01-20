@@ -1,0 +1,54 @@
+### Generated file do not edit
+
+[global]
+ioengine=libaio
+invalidate=1
+ramp_time=10
+iodepth=128
+group_reporting=1
+direct=1
+log_avg_msec=30000
+cpus_allowed_policy=split
+thread
+
+{{- $ns := dict "last" "" "new" "" -}}
+{{- range $wi, $workload := .Workloads }}
+
+###############################################################################
+{{- $wdef := index $.WorkloadsDB $workload -}}
+{{- $ptypes := keys $wdef.Process | sortAlpha -}}
+{{- range $pi, $ptype := $ptypes }}
+{{- $count := index $wdef.Process $ptype -}}
+{{- if gt $count 0 }}
+{{- $widx := add $wi 1 -}}
+{{- $jobname := printf "%03d-%s-%s-%s" $widx $.Device $workload $ptype -}}
+[{{ $jobname }}]
+{{- $curNew := get $ns "new" -}}
+{{- if eq $curNew "" }}
+stonewall
+{{- $_ := set $ns "new" $jobname -}}
+{{- end }}
+{{- $inc := includeName $ptype -}}
+{{- $ctx := dict
+    "Manufacturer" $.Manufacturer
+    "Disk" $.Disk
+    "Device" $.Device
+    "Serial" $.Serial
+    "Host" $.Host
+    "Workload" $workload
+    "ProcessType" $ptype
+    "WorkloadIndex" $widx
+    "WorkloadDef" $wdef
+  -}}
+{{- include $inc $ctx }}
+{{- $last := get $ns "last" -}}
+{{- if ne $last "" }}
+wait_for={{ $last }}
+
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $new := get $ns "new" -}}
+{{- $_ := set $ns "last" $new -}}
+{{- $_ := set $ns "new" "" -}}
+{{- end }}

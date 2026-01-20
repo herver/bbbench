@@ -1,0 +1,34 @@
+### Generated file do not edit
+{{- $ns := dict "previous" 0 -}}
+{{- range $wi, $workload := .Workloads }}
+{{- $wdef := index $.WorkloadsDB $workload -}}
+{{- $ptypes := keys $wdef.Process | sortAlpha -}}
+{{- range $pi, $ptype := $ptypes }}
+{{- $count := index $wdef.Process $ptype -}}
+{{- if gt $count 0 }}
+{{- if $wdef.WriteLog }}
+{{- $widx := add $wi 1 -}}
+{{- $jobname := printf "%03d-%s-%s" $widx $.Device $workload -}}
+{{- $prev := get $ns "previous" -}}
+{{- if ne $widx $prev }}
+{{ $jobname }}:
+{{- $_ := set $ns "previous" $widx -}}
+{{- end }}
+{{- $ctx := dict
+    "Manufacturer" $.Manufacturer
+    "Disk" $.Disk
+    "Device" $.Device
+    "Serial" $.Serial
+    "Host" $.Host
+    "Workload" $workload
+    "ProcessType" $ptype
+    "WorkloadIndex" $widx
+    "WorkloadDef" $wdef
+    "WCE" $.WCE
+  -}}
+{{- $out := includeOutputName -}}
+{{- include $out $ctx }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

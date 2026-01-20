@@ -1,0 +1,286 @@
+fio:
+  generated:
+    path: &fio_path "~/.bbbench"
+
+fioplot:
+  theme: "fivethirtyeight"
+  output:
+    path: "~/.bbbench/output"
+  data_dir: *fio_path
+  x:
+    tick_step: 10.0
+    scale_down: 60.0
+  y:
+    #max: 1000000
+    tick_unit: 50.0
+    invert_write: False
+  ignore_until_hours: 0.0
+
+bbbench:
+  wce: False
+
+  default:
+    template:
+      path: "./bbbench/templates"
+      filename: "criteo_disk.fio.tmpl"
+    template_fioplot:
+      filename: "output.yml.tmpl"
+    blocksize: &default_blocksize "4k"
+    duration:
+      hdd: &default_duration 600
+      ssd: &default_duration_ssd 3600
+    fulldisk: &default_fulldisk False
+    write_log: &default_write_log True
+
+  1m:
+    blocksize: &blocksize_1m "1M"
+
+  zoned:
+    random_distribution_beginning: &zoned_beginning zoned:100/10:0/90
+    random_distribution_middle: &zoned_middle zoned:0/50:100/10:0/40
+    random_distribution_end: &zoned_end zoned:0/90:100/10
+
+  workloadsdb:
+    ssd_prepareread:
+      blocksize: 1M
+      fulldisk: True
+      write_log: False
+      process:
+        write: 1
+    ssd_blkdiscard:
+      write_log: False
+      fulldisk: True
+      process:
+        trim: 1
+    ssd_seqread:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration_ssd
+      write_log: *default_write_log
+      process:
+        read: 1
+        write: 0
+    ssd_seqwrite:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration_ssd
+      write_log: *default_write_log
+      process:
+        read: 0
+        write: 1
+    ssd_randread:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration_ssd
+      write_log: *default_write_log
+      process:
+        randread: 10
+        randwrite: 0
+    ssd_randwrite:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration_ssd
+      write_log: *default_write_log
+      process:
+        randread: 0
+        randwrite: 10
+    ssd_randrw_70_30:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration_ssd
+      write_log: *default_write_log
+      process:
+        randread: 7
+        randwrite: 3
+    ssd_randrw_50_50:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      process:
+        randread: 5
+        randwrite: 5
+
+    hdd_seqread:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      process:
+        read: 1
+        write: 0
+    hdd_seqwrite:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      process:
+        read: 0
+        write: 1
+    hdd_randread:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      process:
+        randread: 10
+        randwrite: 0
+    hdd_randwrite:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      process:
+        randread: 0
+        randwrite: 10
+    hdd_randrw_70_30:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      process:
+        randread: 7
+        randwrite: 3
+    hdd_randrw_50_50:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      process:
+        randread: 5
+        randwrite: 5
+    hdd_1m_seqread:
+      blocksize: *blocksize_1m
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      process:
+        read: 1
+        write: 0
+    hdd_1m_seqwrite:
+      blocksize: *blocksize_1m
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      process:
+        read: 0
+        write: 1
+    hdd_1m_randread:
+      blocksize: *blocksize_1m
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      process:
+        randread: 10
+        randwrite: 0
+    hdd_1m_randwrite:
+      blocksize: *blocksize_1m
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      process:
+        randread: 0
+        randwrite: 10
+    hdd_1m_randrw_70_30:
+      blocksize: *blocksize_1m
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      process:
+        randread: 7
+        randwrite: 3
+    hdd_1m_randrw_50_50:
+      blocksize: *blocksize_1m
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      process:
+        randread: 5
+        randwrite: 5
+    hdd_randread_position_beginning:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      random_distribution: *zoned_beginning
+      process:
+        randread: 10
+        randwrite: 0
+    hdd_randread_position_middle:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      random_distribution: *zoned_middle
+      process:
+        randread: 10
+        randwrite: 0
+    hdd_randread_position_end:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      random_distribution: *zoned_end
+      process:
+        randread: 10
+        randwrite: 0
+    hdd_randwrite_position_beginning:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      random_distribution: *zoned_beginning
+      process:
+        randread: 0
+        randwrite: 10
+    hdd_randwrite_position_middle:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      random_distribution: *zoned_middle
+      process:
+        randread: 0
+        randwrite: 10
+    hdd_randwrite_position_end:
+      blocksize: *default_blocksize
+      fulldisk: *default_fulldisk
+      duration: *default_duration
+      write_log: *default_write_log
+      random_distribution: *zoned_end
+      process:
+        randread: 0
+        randwrite: 10
+
+  workloads:
+    ssd:
+      - ssd_blkdiscard
+      - ssd_prepareread
+      - ssd_seqread
+      - ssd_randread
+      - ssd_randrw_70_30
+      - ssd_randrw_50_50
+      - ssd_blkdiscard
+      - ssd_seqwrite
+      - ssd_blkdiscard
+      - ssd_randwrite
+
+    hdd:
+      - hdd_seqread
+      - hdd_seqwrite
+      - hdd_randread
+      - hdd_randwrite
+      - hdd_randrw_70_30
+      - hdd_randrw_50_50
+      - hdd_1m_seqread
+      - hdd_1m_seqwrite
+      - hdd_1m_randread
+      - hdd_1m_randwrite
+      - hdd_1m_randrw_70_30
+      - hdd_1m_randrw_50_50
+      - hdd_randread_position_beginning
+      - hdd_randwrite_position_beginning
+      - hdd_randread_position_middle
+      - hdd_randwrite_position_middle
+      - hdd_randread_position_end
+      - hdd_randwrite_position_end
