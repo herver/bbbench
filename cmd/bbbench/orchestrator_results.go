@@ -1,0 +1,164 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"time"
+)
+
+// FioJsonOutput represents the structure of fio's JSON output.
+type FioJsonOutput struct {
+	FioVersion string `json:"fio version"`
+	Timestamp  int64  `json:"timestamp"`
+	Jobs       []struct {
+		JobName string `json:"jobname"`
+		Read    struct {
+			IoBytes  int64   `json:"io_bytes"`
+			BwBytes  int64   `json:"bw_bytes"`
+			Iops     float64 `json:"iops"`
+			Runtime  int64   `json:"runtime"`
+			TotalIos int64   `json:"total_ios"`
+		} `json:"read"`
+		Write struct {
+			IoBytes  int64   `json:"io_bytes"`
+			BwBytes  int64   `json:"bw_bytes"`
+			Iops     float64 `json:"iops"`
+			Runtime  int64   `json:"runtime"`
+			TotalIos int64   `json:"total_ios"`
+		} `json:"write"`
+		Trim struct {
+			IoBytes  int64   `json:"io_bytes"`
+			BwBytes  int64   `json:"bw_bytes"`
+			Iops     float64 `json:"iops"`
+			Runtime  int64   `json:"runtime"`
+			TotalIos int64   `json:"total_ios"`
+		} `json:"trim"`
+	} `json:"jobs"`
+}
+
+// parseFioJsonOutput parses fio's JSON output.
+func parseFioJsonOutput(jsonData []byte) (*FioJsonOutput, error) {
+	var output FioJsonOutput
+	if err := json.Unmarshal(jsonData, &output); err != nil {
+		return nil, fmt.Errorf("unmarshal fio json: %w", err)
+	}
+	return &output, nil
+}
+
+// displayResults shows a summary of all benchmark results.
+func displayResults(coordinator *ExecutionCoordinator) error {
+	fmt.Println("\n" + repeatString("=", 80))
+	fmt.Println("BENCHMARK RESULTS SUMMARY")
+	fmt.Println(repeatString("=", 80))
+	fmt.Println()
+
+	// Sort drives by name for consistent output
+	sortedDrives := make([]DriveInfo, len(coordinator.drives))
+	copy(sortedDrives, coordinator.drives)
+	sort.Slice(sortedDrives, func(i, j int) bool {
+		return sortedDrives[i].Device.Name < sortedDrives[j].Device.Name
+	})
+
+	for _, drive := range sortedDrives {
+		results := coordinator.results[drive.Device.Name]
+		if len(results) == 0 {
+			continue
+		}
+
+		fmt.Printf("Drive: %s (%s %s)\n", drive.Device.Name, drive.Device.Vendor, drive.Device.Model)
+		fmt.Printf("%s\n", repeatString("-", 80))
+
+		var totalDuration time.Duration
+		successCount := 0
+		errorCount := 0
+
+		for _, result := range results {
+			duration := result.EndTime.Sub(result.StartTime)
+			totalDuration += duration
+
+			if result.Error != nil {
+				errorCount++
+				fmt.Printf("  Phase %d: ERROR - %v\n", result.Phase, result.Error)
+				continue
+			}
+
+			successCount++
+
+			// Parse and display key metrics
+			fioOutput, err := parseFioJsonOutput(result.JsonOutput)
+			if err != nil {
+				fmt.Printf("  Phase %d: WARNING - failed to parse results: %v\n", result.Phase, err)
+				continue
+			}
+
+			// Aggregate metrics across all jobs in this phase
+			var totalReadIops, totalWriteIops, totalTrimIops float64
+			var totalReadBw, totalWriteBw, totalTrimBw int64
+
+			for _, job := range fioOutput.Jobs {
+				totalReadIops += job.Read.Iops
+				totalWriteIops += job.Write.Iops
+				totalTrimIops += job.Trim.Iops
+				totalReadBw += job.Read.BwBytes
+				totalWriteBw += job.Write.BwBytes
+				totalTrimBw += job.Trim.BwBytes
+			}
+
+			fmt.Printf("  Phase %d: ", result.Phase)
+			parts := []string{}
+
+			if totalReadIops > 0 {
+				parts = append(parts, fmt.Sprintf("Read: %.0f IOPS (%.1f MB/s)",
+					totalReadIops, float64(totalReadBw)/(1024*1024)))
+			}
+			if totalWriteIops > 0 {
+				parts = append(parts, fmt.Sprintf("Write: %.0f IOPS (%.1f MB/s)",
+					totalWriteIops, float64(totalWriteBw)/(1024*1024)))
+			}
+			if totalTrimIops > 0 {
+				parts = append(parts, fmt.Sprintf("Trim: %.0f IOPS (%.1f MB/s)",
+					totalTrimIops, float64(totalTrimBw)/(1024*1024)))
+			}
+
+			if len(parts) > 0 {
+				fmt.Printf("%s (%.1fs)\n", joinStrings(parts, ", "), duration.Seconds())
+			} else {
+				fmt.Printf("Complete (%.1fs)\n", duration.Seconds())
+			}
+
+			fmt.Printf("    Output: %s\n", result.OutputPath)
+		}
+
+		fmt.Printf("\nTotal: %d phases, %d successful, %d errors, %.1f minutes\n",
+			len(results), successCount, errorCount, totalDuration.Minutes())
+		fmt.Println()
+	}
+
+	fmt.Println(repeatString("=", 80))
+	fmt.Printf("All results saved to: %s\n", coordinator.outputDir)
+	fmt.Println(repeatString("=", 80))
+
+	return nil
+}
+
+// Helper function to repeat a string n times.
+func repeatString(s string, n int) string {
+	var result string
+	for i := 0; i < n; i++ {
+		result += s
+	}
+	return result
+}
+
+// Helper function to join strings with a separator.
+func joinStrings(parts []string, sep string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	result := parts[0]
+	for i := 1; i < len(parts); i++ {
+		result += sep + parts[i]
+	}
+	return result
+}

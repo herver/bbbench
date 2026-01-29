@@ -17,6 +17,8 @@ func main() {
 		exitWithError(runValidateTemplates(os.Args[2:]))
 	case "doctor":
 		exitWithError(runDoctor(os.Args[2:]))
+	case "orchestrator":
+		exitWithError(runOrchestrator(os.Args[2:]))
 	case "completion":
 		exitWithError(runCompletion(os.Args[2:]))
 	case "help", "-h", "--help":

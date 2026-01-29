@@ -10,9 +10,9 @@ This repository builds a **single CLI binary**: `bbbench`.
 ## Requirements
 
 - Linux
-- Root privileges for `bbbench generate` (reads sysfs and may perform SCSI SG_IO)
+- Root privileges for `bbbench generate`, `bbbench doctor`, and `bbbench orchestrator`
 - Go >= 1.21 to build
-- `fio` to run the generated jobs
+- `fio` to run the generated jobs (required for `bbbench orchestrator`)
 
 ## Build
 
@@ -55,6 +55,32 @@ Check host readiness (Linux, root, sysfs, block devices).
 ```bash
 sudo ./bbbench doctor
 ```
+
+### `bbbench orchestrator`
+
+Run fio benchmarks on multiple drives with interactive drive selection.
+
+```bash
+sudo ./bbbench orchestrator
+sudo ./bbbench orchestrator --mode sequential --output ~/benchmark-results
+```
+
+Flags:
+- `--mode` execution mode: `parallel-sync` (default) or `sequential`
+  - `parallel-sync`: All drives run phase 1, then all run phase 2, etc.
+  - `sequential`: Complete benchmark on drive 1, then drive 2, etc.
+- `--output` output directory for JSON results (default: from config `fioplot.output.path`)
+- `--config` path to config file (uses search order if omitted)
+- `--dist` overrides dist path
+
+The orchestrator command:
+1. Discovers block devices and matches them with generated fio files
+2. Presents an interactive TUI for drive selection (Space=toggle, Enter=confirm, q=quit)
+3. Executes benchmarks in the chosen mode
+4. Saves JSON results for each phase to the output directory
+5. Displays a summary of IOPS and bandwidth results
+
+**Note**: You must run `bbbench generate` first to create the fio job files.
 
 ### `bbbench completion`
 

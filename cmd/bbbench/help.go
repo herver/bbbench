@@ -10,6 +10,7 @@ Usage:
 
 Commands:
   generate             generate fio job files
+  orchestrator         run benchmarks on multiple drives
   validate-templates   validate template syntax
   doctor               check host readiness
   completion           generate shell completions
