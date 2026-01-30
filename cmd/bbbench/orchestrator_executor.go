@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -19,6 +20,7 @@ type ExecutionCoordinator struct {
 	mode        string
 	outputDir   string
 	dryRun      bool
+	verbose     bool
 	results     map[string][]*FioResult
 	mu          sync.Mutex
 	ctx         context.Context
@@ -231,6 +233,8 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 		// Save state after each phase
 		if err := ec.saveState(); err != nil {
 			logger.Error("save state", "err", err)
+		} else if ec.verbose {
+			fmt.Printf("  [Saved state]\n")
 		}
 	}
 
@@ -296,6 +300,8 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 			// Save state after each phase
 			if err := ec.saveState(); err != nil {
 				logger.Error("save state", "err", err)
+			} else if ec.verbose {
+				fmt.Printf("    [Saved state]\n")
 			}
 		}
 
@@ -359,6 +365,17 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 		"--output="+outputFile,
 		tmpPath)
 
+	if ec.verbose {
+		fmt.Printf("\n[%s Phase %d] Command: fio --output-format=json --output=%s %s\n",
+			drive.Device.Name, phaseIdx, outputFile, tmpPath)
+		fmt.Printf("[%s Phase %d] Jobs: ", drive.Device.Name, phaseIdx)
+		jobNames := make([]string, len(phase))
+		for i, job := range phase {
+			jobNames[i] = job.Name
+		}
+		fmt.Printf("%s\n", strings.Join(jobNames, ", "))
+	}
+
 	logger.Debug("executing fio",
 		"device", drive.Device.Name,
 		"phase", phaseIdx,
@@ -371,9 +388,16 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 			result.Error = fmt.Errorf("fio execution cancelled")
 		} else {
 			result.Error = fmt.Errorf("fio execution failed: %w\nOutput: %s", err, string(output))
+			if ec.verbose {
+				fmt.Printf("[%s Phase %d] Error output:\n%s\n", drive.Device.Name, phaseIdx, string(output))
+			}
 		}
 		result.EndTime = time.Now()
 		return result
+	}
+
+	if ec.verbose && len(output) > 0 {
+		fmt.Printf("[%s Phase %d] fio stderr/stdout:\n%s\n", drive.Device.Name, phaseIdx, string(output))
 	}
 
 	// Read the JSON output

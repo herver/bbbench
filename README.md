@@ -71,6 +71,7 @@ Flags:
   - `sequential`: Complete benchmark on drive 1, then drive 2, etc.
 - `--dry-run` show what would be executed without running fio
 - `--resume` resume from previous interrupted run (skips completed phases)
+- `--verbose` show detailed execution information (commands, stderr, debug info)
 - `--output` output directory for JSON results (default: from config `fioplot.output.path`)
 - `--config` path to config file (uses search order if omitted)
 - `--dist` overrides dist path

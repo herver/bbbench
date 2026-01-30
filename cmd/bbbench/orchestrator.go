@@ -59,6 +59,7 @@ func runOrchestrator(args []string) error {
 	outputDir := fs.String("output", "", "output directory for results (default: from config fioplot.output.path)")
 	dryRun := fs.Bool("dry-run", false, "show what would be executed without running fio")
 	resume := fs.Bool("resume", false, "resume from previous interrupted run")
+	verbose := fs.Bool("verbose", false, "show detailed execution information")
 	dmiPath := fs.String("dmi-path", "", "override /sys/class/dmi/id (tests)")
 	sysBlock := fs.String("sys-block", "", "override /sys/block (tests)")
 	_ = fs.Parse(args)
@@ -79,13 +80,27 @@ func runOrchestrator(args []string) error {
 	}
 
 	// Discover drives and match with fio files
-	drives, err := discoverDrivesWithFioFiles(cfg, *dmiPath, *sysBlock)
+	drives, err := discoverDrivesWithFioFiles(cfg, *dmiPath, *sysBlock, *verbose)
 	if err != nil {
 		return err
 	}
 
 	if len(drives) == 0 {
 		return errors.New("no drives with generated fio files found. Run 'bbbench generate' first")
+	}
+
+	if *verbose {
+		fmt.Printf("\nDiscovered %d drive(s) with fio files:\n", len(drives))
+		for _, drive := range drives {
+			fmt.Printf("  - %s: %s %s %s (%d GB, %s)\n",
+				drive.Device.Name,
+				drive.Device.Vendor,
+				drive.Device.Model,
+				drive.Device.Serial,
+				drive.Device.CapacityGB(),
+				drive.Device.WorkloadType())
+		}
+		fmt.Println()
 	}
 
 	// Launch TUI for drive selection
@@ -163,6 +178,7 @@ func runOrchestrator(args []string) error {
 	coordinator.dryRun = *dryRun
 	coordinator.stateFile = stateFile
 	coordinator.resumeState = resumeState
+	coordinator.verbose = *verbose
 
 	if *dryRun {
 		// In dry-run mode, just show what would be executed
@@ -189,7 +205,7 @@ func runOrchestrator(args []string) error {
 }
 
 // discoverDrivesWithFioFiles discovers drives and matches them with generated fio files.
-func discoverDrivesWithFioFiles(cfg *config.Root, dmiPath, sysBlock string) ([]DriveInfo, error) {
+func discoverDrivesWithFioFiles(cfg *config.Root, dmiPath, sysBlock string, verbose bool) ([]DriveInfo, error) {
 	// Load DMI info for host identification
 	dmiInfo, err := dmi.Load(dmi.OSReader{}, dmiPath)
 	if err != nil {
