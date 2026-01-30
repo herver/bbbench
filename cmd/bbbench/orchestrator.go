@@ -57,6 +57,7 @@ func runOrchestrator(args []string) error {
 	distDir := fs.String("dist", "", "dist directory (default ./dist or BBBENCH_DIST_DIR)")
 	mode := fs.String("mode", "parallel-sync", "execution mode: parallel-sync or sequential")
 	outputDir := fs.String("output", "", "output directory for results (default: from config fioplot.output.path)")
+	dryRun := fs.Bool("dry-run", false, "show what would be executed without running fio")
 	dmiPath := fs.String("dmi-path", "", "override /sys/class/dmi/id (tests)")
 	sysBlock := fs.String("sys-block", "", "override /sys/block (tests)")
 	_ = fs.Parse(args)
@@ -117,14 +118,25 @@ func runOrchestrator(args []string) error {
 		return fmt.Errorf("create output directory: %w", err)
 	}
 
-	logger.Info("orchestrator start", "mode", *mode, "drives", len(selectedDrives), "output", outDir)
-	fmt.Printf("Running benchmarks on %d drive(s) in %s mode\n", len(selectedDrives), *mode)
+	logger.Info("orchestrator start", "mode", *mode, "drives", len(selectedDrives), "output", outDir, "dry_run", *dryRun)
+
+	if *dryRun {
+		fmt.Printf("DRY RUN: Would run benchmarks on %d drive(s) in %s mode\n", len(selectedDrives), *mode)
+	} else {
+		fmt.Printf("Running benchmarks on %d drive(s) in %s mode\n", len(selectedDrives), *mode)
+	}
 	fmt.Printf("Output directory: %s\n\n", outDir)
 
 	// Parse fio files
 	coordinator, err := newExecutionCoordinator(selectedDrives, *mode, outDir)
 	if err != nil {
 		return err
+	}
+	coordinator.dryRun = *dryRun
+
+	if *dryRun {
+		// In dry-run mode, just show what would be executed
+		return displayDryRun(coordinator)
 	}
 
 	// Execute based on mode
@@ -199,4 +211,82 @@ func discoverDrivesWithFioFiles(cfg *config.Root, dmiPath, sysBlock string) ([]D
 	}
 
 	return drives, nil
+}
+
+// displayDryRun shows what would be executed in dry-run mode.
+func displayDryRun(coordinator *ExecutionCoordinator) error {
+	fmt.Println(repeatString("=", 80))
+	fmt.Println("DRY RUN - EXECUTION PLAN")
+	fmt.Println(repeatString("=", 80))
+	fmt.Println()
+
+	fmt.Printf("Mode: %s\n", coordinator.mode)
+	fmt.Printf("Drives: %d\n", len(coordinator.drives))
+	fmt.Printf("Output directory: %s\n\n", coordinator.outputDir)
+
+	// Calculate total phases
+	maxPhases := 0
+	for _, workload := range coordinator.workloads {
+		if len(workload.Phases) > maxPhases {
+			maxPhases = len(workload.Phases)
+		}
+	}
+
+	if coordinator.mode == "parallel-sync" {
+		fmt.Printf("Would execute %d phase(s) across all drives in parallel-sync mode\n\n", maxPhases)
+
+		for phaseIdx := 0; phaseIdx < maxPhases; phaseIdx++ {
+			fmt.Printf("Phase %d/%d:\n", phaseIdx+1, maxPhases)
+
+			for _, drive := range coordinator.drives {
+				workload := coordinator.workloads[drive.Device.Name]
+				if phaseIdx >= len(workload.Phases) {
+					continue
+				}
+
+				phase := workload.Phases[phaseIdx]
+				fmt.Printf("  %s: %d job(s) - ", drive.Device.Name, len(phase))
+				jobNames := make([]string, len(phase))
+				for i, job := range phase {
+					jobNames[i] = job.Name
+				}
+				fmt.Printf("%s\n", strings.Join(jobNames, ", "))
+			}
+			fmt.Println()
+		}
+	} else {
+		fmt.Println("Would execute benchmarks sequentially, one drive at a time:")
+		fmt.Println()
+
+		for i, drive := range coordinator.drives {
+			workload := coordinator.workloads[drive.Device.Name]
+			fmt.Printf("%d. %s (%s %s)\n", i+1, drive.Device.Name, drive.Device.Vendor, drive.Device.Model)
+			fmt.Printf("   Phases: %d\n", len(workload.Phases))
+			fmt.Printf("   Total jobs: %d\n", len(workload.Jobs))
+			fmt.Printf("   Fio file: %s\n\n", drive.FioFilePath)
+		}
+	}
+
+	fmt.Println(repeatString("=", 80))
+	fmt.Println("Commands that would be executed:")
+	fmt.Println(repeatString("=", 80))
+	fmt.Println()
+
+	// Show sample fio command
+	if len(coordinator.drives) > 0 {
+		drive := coordinator.drives[0]
+		workload := coordinator.workloads[drive.Device.Name]
+		if len(workload.Phases) > 0 {
+			fmt.Println("Example command for first phase of first drive:")
+			timestamp := 1234567890
+			outputFile := filepath.Join(coordinator.outputDir, fmt.Sprintf("%s_phase%d_%d.json",
+				drive.Device.Name, 0, timestamp))
+			fmt.Printf("  fio --output-format=json --output=%s <temp-phase-file>\n\n", outputFile)
+		}
+	}
+
+	fmt.Println("No actual benchmarks were run (dry-run mode)")
+	fmt.Println(repeatString("=", 80))
+
+	return nil
 }

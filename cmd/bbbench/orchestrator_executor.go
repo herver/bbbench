@@ -15,6 +15,7 @@ type ExecutionCoordinator struct {
 	workloads map[string]*FioWorkload // keyed by device name
 	mode      string
 	outputDir string
+	dryRun    bool
 	results   map[string][]*FioResult
 	mu        sync.Mutex
 }
