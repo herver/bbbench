@@ -58,6 +58,7 @@ func runOrchestrator(args []string) error {
 	mode := fs.String("mode", "parallel-sync", "execution mode: parallel-sync or sequential")
 	outputDir := fs.String("output", "", "output directory for results (default: from config fioplot.output.path)")
 	dryRun := fs.Bool("dry-run", false, "show what would be executed without running fio")
+	resume := fs.Bool("resume", false, "resume from previous interrupted run")
 	dmiPath := fs.String("dmi-path", "", "override /sys/class/dmi/id (tests)")
 	sysBlock := fs.String("sys-block", "", "override /sys/block (tests)")
 	_ = fs.Parse(args)
@@ -118,7 +119,34 @@ func runOrchestrator(args []string) error {
 		return fmt.Errorf("create output directory: %w", err)
 	}
 
-	logger.Info("orchestrator start", "mode", *mode, "drives", len(selectedDrives), "output", outDir, "dry_run", *dryRun)
+	// Handle resume mode
+	var resumeState *ExecutionState
+	stateFile := getStateFilePath(outDir)
+	if *resume {
+		state, err := loadState(stateFile)
+		if err != nil {
+			return fmt.Errorf("load state for resume: %w", err)
+		}
+		resumeState = state
+
+		// Validate state matches current request
+		if state.Mode != *mode {
+			return fmt.Errorf("cannot resume: mode mismatch (previous: %s, requested: %s)", state.Mode, *mode)
+		}
+
+		fmt.Printf("Resuming previous run from %s\n", state.StartTime.Format("2006-01-02 15:04:05"))
+		fmt.Printf("Mode: %s\n", state.Mode)
+		fmt.Printf("Drives: %d\n", len(state.Drives))
+
+		// Count completed work
+		totalCompleted := 0
+		for _, phases := range state.CompletedWork {
+			totalCompleted += len(phases)
+		}
+		fmt.Printf("Already completed phases: %d\n\n", totalCompleted)
+	}
+
+	logger.Info("orchestrator start", "mode", *mode, "drives", len(selectedDrives), "output", outDir, "dry_run", *dryRun, "resume", *resume)
 
 	if *dryRun {
 		fmt.Printf("DRY RUN: Would run benchmarks on %d drive(s) in %s mode\n", len(selectedDrives), *mode)
@@ -133,6 +161,8 @@ func runOrchestrator(args []string) error {
 		return err
 	}
 	coordinator.dryRun = *dryRun
+	coordinator.stateFile = stateFile
+	coordinator.resumeState = resumeState
 
 	if *dryRun {
 		// In dry-run mode, just show what would be executed

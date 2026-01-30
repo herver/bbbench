@@ -70,6 +70,7 @@ Flags:
   - `parallel-sync`: All drives run phase 1, then all run phase 2, etc.
   - `sequential`: Complete benchmark on drive 1, then drive 2, etc.
 - `--dry-run` show what would be executed without running fio
+- `--resume` resume from previous interrupted run (skips completed phases)
 - `--output` output directory for JSON results (default: from config `fioplot.output.path`)
 - `--config` path to config file (uses search order if omitted)
 - `--dist` overrides dist path

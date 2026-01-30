@@ -26,6 +26,9 @@ type ExecutionCoordinator struct {
 	interrupted bool
 	tempFiles   []string
 	tempFilesMu sync.Mutex
+	stateFile   string
+	resumeState *ExecutionState
+	startTime   time.Time
 }
 
 // FioResult represents the result of a single fio execution.
@@ -52,6 +55,7 @@ func newExecutionCoordinator(drives []DriveInfo, mode, outputDir string) (*Execu
 		results:   make(map[string][]*FioResult),
 		ctx:       ctx,
 		cancel:    cancel,
+		startTime: time.Now(),
 	}
 
 	// Set up signal handling for graceful shutdown
@@ -152,8 +156,24 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 		case <-ec.ctx.Done():
 			fmt.Println("\nExecution interrupted. Cleaning up...")
 			ec.cleanup()
+			ec.saveState()
 			return fmt.Errorf("execution interrupted by user")
 		default:
+		}
+
+		// Check if all drives completed this phase (for resume)
+		allCompleted := true
+		for _, drive := range ec.drives {
+			workload := ec.workloads[drive.Device.Name]
+			if phaseIdx < len(workload.Phases) && !ec.isPhaseCompleted(drive.Device.Name, phaseIdx) {
+				allCompleted = false
+				break
+			}
+		}
+
+		if allCompleted {
+			fmt.Printf("Phase %d/%d: SKIPPED (already completed)\n", phaseIdx+1, maxPhases)
+			continue
 		}
 
 		fmt.Printf("Phase %d/%d: ", phaseIdx+1, maxPhases)
@@ -169,6 +189,11 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 
 			// Skip if this drive has fewer phases
 			if phaseIdx >= len(workload.Phases) {
+				continue
+			}
+
+			// Skip if already completed in previous run
+			if ec.isPhaseCompleted(drive.Device.Name, phaseIdx) {
 				continue
 			}
 
@@ -202,9 +227,15 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 		} else {
 			fmt.Printf("COMPLETE (%.1fs)\n", elapsed.Seconds())
 		}
+
+		// Save state after each phase
+		if err := ec.saveState(); err != nil {
+			logger.Error("save state", "err", err)
+		}
 	}
 
 	ec.cleanup()
+	ec.cleanupStateFile()
 	fmt.Println("\nAll phases complete!")
 	return nil
 }
@@ -235,8 +266,15 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 			case <-ec.ctx.Done():
 				fmt.Println("\n  Interrupted during execution. Cleaning up...")
 				ec.cleanup()
+				ec.saveState()
 				return fmt.Errorf("execution interrupted by user")
 			default:
+			}
+
+			// Skip if already completed in previous run
+			if ec.isPhaseCompleted(drive.Device.Name, phaseIdx) {
+				fmt.Printf("  Phase %d/%d: SKIPPED (already completed)\n", phaseIdx+1, len(workload.Phases))
+				continue
 			}
 
 			fmt.Printf("  Phase %d/%d: ", phaseIdx+1, len(workload.Phases))
@@ -254,6 +292,11 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 			} else {
 				fmt.Printf("COMPLETE (%.1fs)\n", elapsed.Seconds())
 			}
+
+			// Save state after each phase
+			if err := ec.saveState(); err != nil {
+				logger.Error("save state", "err", err)
+			}
 		}
 
 		totalElapsed := time.Since(startTime)
@@ -261,6 +304,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 	}
 
 	ec.cleanup()
+	ec.cleanupStateFile()
 	fmt.Println("All drives complete!")
 	return nil
 }
