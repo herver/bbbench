@@ -49,7 +49,11 @@ func parseFioJsonOutput(jsonData []byte) (*FioJsonOutput, error) {
 // displayResults shows a summary of all benchmark results.
 func displayResults(coordinator *ExecutionCoordinator) error {
 	fmt.Println("\n" + repeatString("=", 80))
-	fmt.Println("BENCHMARK RESULTS SUMMARY")
+	if coordinator.interrupted {
+		fmt.Println("BENCHMARK RESULTS SUMMARY (INTERRUPTED - PARTIAL RESULTS)")
+	} else {
+		fmt.Println("BENCHMARK RESULTS SUMMARY")
+	}
 	fmt.Println(repeatString("=", 80))
 	fmt.Println()
 

@@ -140,23 +140,22 @@ func runOrchestrator(args []string) error {
 	}
 
 	// Execute based on mode
+	var execErr error
 	if *mode == "parallel-sync" {
-		if err := coordinator.executeParallelSync(); err != nil {
-			return err
-		}
+		execErr = coordinator.executeParallelSync()
 	} else {
-		if err := coordinator.executeSequential(); err != nil {
-			return err
-		}
+		execErr = coordinator.executeSequential()
 	}
 
-	// Display results
+	// Display results even if interrupted (partial results)
+	var displayErr error
 	if err := displayResults(coordinator); err != nil {
-		return err
+		logger.Error("display results", "err", err)
+		displayErr = err
 	}
 
 	logger.Info("orchestrator complete")
-	return nil
+	return errors.Join(execErr, displayErr)
 }
 
 // discoverDrivesWithFioFiles discovers drives and matches them with generated fio files.

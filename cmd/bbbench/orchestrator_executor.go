@@ -1,23 +1,31 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
 
 // ExecutionCoordinator manages benchmark execution across multiple drives.
 type ExecutionCoordinator struct {
-	drives    []DriveInfo
-	workloads map[string]*FioWorkload // keyed by device name
-	mode      string
-	outputDir string
-	dryRun    bool
-	results   map[string][]*FioResult
-	mu        sync.Mutex
+	drives      []DriveInfo
+	workloads   map[string]*FioWorkload // keyed by device name
+	mode        string
+	outputDir   string
+	dryRun      bool
+	results     map[string][]*FioResult
+	mu          sync.Mutex
+	ctx         context.Context
+	cancel      context.CancelFunc
+	interrupted bool
+	tempFiles   []string
+	tempFilesMu sync.Mutex
 }
 
 // FioResult represents the result of a single fio execution.
@@ -34,13 +42,20 @@ type FioResult struct {
 
 // newExecutionCoordinator creates a new coordinator and parses all fio files.
 func newExecutionCoordinator(drives []DriveInfo, mode, outputDir string) (*ExecutionCoordinator, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+
 	ec := &ExecutionCoordinator{
 		drives:    drives,
 		workloads: make(map[string]*FioWorkload),
 		mode:      mode,
 		outputDir: outputDir,
 		results:   make(map[string][]*FioResult),
+		ctx:       ctx,
+		cancel:    cancel,
 	}
+
+	// Set up signal handling for graceful shutdown
+	go ec.handleSignals()
 
 	// Parse all fio files
 	for _, drive := range drives {
@@ -58,6 +73,65 @@ func newExecutionCoordinator(drives []DriveInfo, mode, outputDir string) (*Execu
 	return ec, nil
 }
 
+// exitCodeSIGINT is the conventional exit code for processes terminated by SIGINT (128 + signal number).
+const exitCodeSIGINT = 128 + int(syscall.SIGINT)
+
+// handleSignals sets up signal handling for graceful shutdown.
+func (ec *ExecutionCoordinator) handleSignals() {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	<-sigChan
+	fmt.Println("\n\nReceived interrupt signal. Gracefully shutting down...")
+	fmt.Println("Waiting for current phase to complete...")
+	fmt.Println("Press Ctrl+C again to force quit (may leave temporary files)")
+
+	ec.mu.Lock()
+	ec.interrupted = true
+	ec.mu.Unlock()
+
+	ec.cancel()
+
+	// Set up second signal handler for force quit
+	go func() {
+		<-sigChan
+		fmt.Println("\nForce quitting...")
+		ec.cleanup()
+		os.Exit(exitCodeSIGINT)
+	}()
+}
+
+// cleanup removes temporary files.
+func (ec *ExecutionCoordinator) cleanup() {
+	ec.tempFilesMu.Lock()
+	defer ec.tempFilesMu.Unlock()
+
+	for _, tmpFile := range ec.tempFiles {
+		if err := os.Remove(tmpFile); err != nil {
+			logger.Debug("cleanup temp file", "path", tmpFile, "err", err)
+		}
+	}
+}
+
+// registerTempFile adds a temporary file to the cleanup list.
+func (ec *ExecutionCoordinator) registerTempFile(path string) {
+	ec.tempFilesMu.Lock()
+	defer ec.tempFilesMu.Unlock()
+	ec.tempFiles = append(ec.tempFiles, path)
+}
+
+// unregisterTempFile removes a temporary file from the cleanup list.
+func (ec *ExecutionCoordinator) unregisterTempFile(path string) {
+	ec.tempFilesMu.Lock()
+	defer ec.tempFilesMu.Unlock()
+	for i, f := range ec.tempFiles {
+		if f == path {
+			ec.tempFiles = append(ec.tempFiles[:i], ec.tempFiles[i+1:]...)
+			break
+		}
+	}
+}
+
 // executeParallelSync runs all drives phase-by-phase with synchronization.
 func (ec *ExecutionCoordinator) executeParallelSync() error {
 	// Find maximum number of phases across all drives
@@ -73,6 +147,15 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 
 	// Execute each phase
 	for phaseIdx := 0; phaseIdx < maxPhases; phaseIdx++ {
+		// Check for interruption
+		select {
+		case <-ec.ctx.Done():
+			fmt.Println("\nExecution interrupted. Cleaning up...")
+			ec.cleanup()
+			return fmt.Errorf("execution interrupted by user")
+		default:
+		}
+
 		fmt.Printf("Phase %d/%d: ", phaseIdx+1, maxPhases)
 
 		var wg sync.WaitGroup
@@ -121,6 +204,7 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 		}
 	}
 
+	ec.cleanup()
 	fmt.Println("\nAll phases complete!")
 	return nil
 }
@@ -131,12 +215,30 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 	fmt.Printf("Executing benchmarks sequentially on %d drive(s)\n\n", len(ec.drives))
 
 	for i, drive := range ec.drives {
+		// Check for interruption
+		select {
+		case <-ec.ctx.Done():
+			fmt.Println("\nExecution interrupted. Cleaning up...")
+			ec.cleanup()
+			return fmt.Errorf("execution interrupted by user")
+		default:
+		}
+
 		fmt.Printf("Drive %d/%d: %s\n", i+1, len(ec.drives), drive.Device.Name)
 
 		workload := ec.workloads[drive.Device.Name]
 		startTime := time.Now()
 
 		for phaseIdx, phase := range workload.Phases {
+			// Check for interruption before each phase
+			select {
+			case <-ec.ctx.Done():
+				fmt.Println("\n  Interrupted during execution. Cleaning up...")
+				ec.cleanup()
+				return fmt.Errorf("execution interrupted by user")
+			default:
+			}
+
 			fmt.Printf("  Phase %d/%d: ", phaseIdx+1, len(workload.Phases))
 			phaseStart := time.Now()
 
@@ -158,6 +260,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 		fmt.Printf("  Total: %.1f minutes\n\n", totalElapsed.Minutes())
 	}
 
+	ec.cleanup()
 	fmt.Println("All drives complete!")
 	return nil
 }
@@ -186,7 +289,11 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 		return result
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
+	ec.registerTempFile(tmpPath)
+	defer func() {
+		os.Remove(tmpPath)
+		ec.unregisterTempFile(tmpPath)
+	}()
 
 	if _, err := tmpFile.WriteString(phaseFioContent); err != nil {
 		tmpFile.Close()
@@ -202,8 +309,8 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 		drive.Device.Name, phaseIdx, timestamp))
 	result.OutputPath = outputFile
 
-	// Execute fio
-	cmd := exec.Command("fio",
+	// Execute fio with context for cancellation support
+	cmd := exec.CommandContext(ec.ctx, "fio",
 		"--output-format=json",
 		"--output="+outputFile,
 		tmpPath)
@@ -215,7 +322,12 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		result.Error = fmt.Errorf("fio execution failed: %w\nOutput: %s", err, string(output))
+		// Check if it was cancelled
+		if ec.ctx.Err() != nil {
+			result.Error = fmt.Errorf("fio execution cancelled")
+		} else {
+			result.Error = fmt.Errorf("fio execution failed: %w\nOutput: %s", err, string(output))
+		}
 		result.EndTime = time.Now()
 		return result
 	}
