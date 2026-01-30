@@ -72,9 +72,29 @@ Flags:
 - `--dry-run` show what would be executed without running fio
 - `--resume` resume from previous interrupted run (skips completed phases)
 - `--verbose` show detailed execution information (commands, stderr, debug info)
+- `--filter-type` filter drives by type: `hdd` or `ssd`
+- `--filter-vendor` filter drives by vendor (case-insensitive substring match)
+- `--filter-model` filter drives by model (case-insensitive substring match)
+- `--filter-min-capacity` filter drives by minimum capacity in GB
+- `--filter-max-capacity` filter drives by maximum capacity in GB (0 = no limit)
 - `--output` output directory for JSON results (default: from config `fioplot.output.path`)
 - `--config` path to config file (uses search order if omitted)
 - `--dist` overrides dist path
+
+Filtering examples:
+```bash
+# Only SSD drives
+sudo ./bbbench orchestrator --filter-type ssd
+
+# Only Samsung drives
+sudo ./bbbench orchestrator --filter-vendor samsung
+
+# Drives between 1TB and 2TB
+sudo ./bbbench orchestrator --filter-min-capacity 1000 --filter-max-capacity 2000
+
+# Combine filters: Samsung SSDs over 500GB
+sudo ./bbbench orchestrator --filter-type ssd --filter-vendor samsung --filter-min-capacity 500
+```
 
 The orchestrator command:
 1. Discovers block devices and matches them with generated fio files

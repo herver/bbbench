@@ -60,6 +60,11 @@ func runOrchestrator(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "show what would be executed without running fio")
 	resume := fs.Bool("resume", false, "resume from previous interrupted run")
 	verbose := fs.Bool("verbose", false, "show detailed execution information")
+	filterType := fs.String("filter-type", "", "filter drives by type: hdd or ssd")
+	filterVendor := fs.String("filter-vendor", "", "filter drives by vendor (case-insensitive substring match)")
+	filterModel := fs.String("filter-model", "", "filter drives by model (case-insensitive substring match)")
+	filterMinCap := fs.Uint64("filter-min-capacity", 0, "filter drives by minimum capacity in GB")
+	filterMaxCap := fs.Uint64("filter-max-capacity", 0, "filter drives by maximum capacity in GB (0 = no limit)")
 	dmiPath := fs.String("dmi-path", "", "override /sys/class/dmi/id (tests)")
 	sysBlock := fs.String("sys-block", "", "override /sys/block (tests)")
 	_ = fs.Parse(args)
@@ -70,6 +75,10 @@ func runOrchestrator(args []string) error {
 
 	if *mode != "parallel-sync" && *mode != "sequential" {
 		return fmt.Errorf("invalid mode: %s (must be parallel-sync or sequential)", *mode)
+	}
+
+	if *filterType != "" && *filterType != "hdd" && *filterType != "ssd" {
+		return fmt.Errorf("invalid filter-type: %s (must be hdd or ssd)", *filterType)
 	}
 
 	dir := resolveDistDir(*distDir)
@@ -101,6 +110,27 @@ func runOrchestrator(args []string) error {
 				drive.Device.WorkloadType())
 		}
 		fmt.Println()
+	}
+
+	// Apply filters
+	filter := DriveFilter{
+		Type:        *filterType,
+		Vendor:      *filterVendor,
+		Model:       *filterModel,
+		MinCapacity: *filterMinCap,
+		MaxCapacity: *filterMaxCap,
+	}
+
+	if filter.HasFilters() {
+		originalCount := len(drives)
+		drives = filter.Apply(drives)
+		if *verbose {
+			fmt.Printf("Applied filters: %d drive(s) remaining (filtered out %d)\n\n", len(drives), originalCount-len(drives))
+		}
+	}
+
+	if len(drives) == 0 {
+		return errors.New("no drives match the specified filters")
 	}
 
 	// Launch TUI for drive selection
@@ -202,6 +232,71 @@ func runOrchestrator(args []string) error {
 
 	logger.Info("orchestrator complete")
 	return errors.Join(execErr, displayErr)
+}
+
+// DriveFilter contains criteria for filtering drives.
+type DriveFilter struct {
+	Type        string // "hdd" or "ssd"
+	Vendor      string // case-insensitive substring match
+	Model       string // case-insensitive substring match
+	MinCapacity uint64 // in GB
+	MaxCapacity uint64 // in GB (0 = no limit)
+}
+
+// HasFilters returns true if any filter is specified.
+func (f *DriveFilter) HasFilters() bool {
+	return f.Type != "" || f.Vendor != "" || f.Model != "" || f.MinCapacity > 0 || f.MaxCapacity > 0
+}
+
+// Apply filters the drive list based on the filter criteria.
+func (f *DriveFilter) Apply(drives []DriveInfo) []DriveInfo {
+	if !f.HasFilters() {
+		return drives
+	}
+
+	filtered := make([]DriveInfo, 0, len(drives))
+	for _, drive := range drives {
+		if f.matches(drive) {
+			filtered = append(filtered, drive)
+		}
+	}
+	return filtered
+}
+
+// matches checks if a drive matches all filter criteria.
+func (f *DriveFilter) matches(drive DriveInfo) bool {
+	// Type filter
+	if f.Type != "" {
+		driveType := drive.Device.WorkloadType()
+		if !strings.EqualFold(f.Type, driveType) {
+			return false
+		}
+	}
+
+	// Vendor filter (case-insensitive substring match)
+	if f.Vendor != "" {
+		if !strings.Contains(strings.ToLower(drive.Device.Vendor), strings.ToLower(f.Vendor)) {
+			return false
+		}
+	}
+
+	// Model filter (case-insensitive substring match)
+	if f.Model != "" {
+		if !strings.Contains(strings.ToLower(drive.Device.Model), strings.ToLower(f.Model)) {
+			return false
+		}
+	}
+
+	// Capacity filters
+	capacityGB := drive.Device.CapacityGB()
+	if f.MinCapacity > 0 && capacityGB < f.MinCapacity {
+		return false
+	}
+	if f.MaxCapacity > 0 && capacityGB > f.MaxCapacity {
+		return false
+	}
+
+	return true
 }
 
 // discoverDrivesWithFioFiles discovers drives and matches them with generated fio files.
