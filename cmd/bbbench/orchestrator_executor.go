@@ -45,8 +45,35 @@ type FioResult struct {
 	EndTime    time.Time
 }
 
+// checkFioInstalled verifies that the fio binary is available in PATH.
+func checkFioInstalled() error {
+	path, err := exec.LookPath("fio")
+	if err != nil {
+		return fmt.Errorf("fio is not installed or not in PATH. Please install fio before running benchmarks")
+	}
+	logger.Debug("found fio binary", "path", path)
+	return nil
+}
+
+// validateFioFile validates a fio file using fio --parse-only.
+func validateFioFile(path string) error {
+	cmd := exec.Command("fio", "--parse-only", path)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Include fio's error output in the error message
+		return fmt.Errorf("fio validation failed: %w\nfio output:\n%s", err, string(output))
+	}
+	logger.Debug("validated fio file", "path", path)
+	return nil
+}
+
 // newExecutionCoordinator creates a new coordinator and parses all fio files.
 func newExecutionCoordinator(drives []DriveInfo, mode, outputDir string) (*ExecutionCoordinator, error) {
+	// Check if fio is installed
+	if err := checkFioInstalled(); err != nil {
+		return nil, err
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	ec := &ExecutionCoordinator{
@@ -63,12 +90,18 @@ func newExecutionCoordinator(drives []DriveInfo, mode, outputDir string) (*Execu
 	// Set up signal handling for graceful shutdown
 	go ec.handleSignals()
 
-	// Parse all fio files
+	// Parse and validate all fio files
 	for _, drive := range drives {
 		workload, err := parseFioFile(drive.FioFilePath)
 		if err != nil {
 			return nil, fmt.Errorf("parse fio file for %s: %w", drive.Device.Name, err)
 		}
+
+		// Validate fio file syntax using fio --parse-only
+		if err := validateFioFile(drive.FioFilePath); err != nil {
+			return nil, fmt.Errorf("validate fio file for %s (%s): %w", drive.Device.Name, drive.FioFilePath, err)
+		}
+
 		ec.workloads[drive.Device.Name] = workload
 		logger.Info("parsed fio file",
 			"device", drive.Device.Name,

@@ -26,7 +26,7 @@ thread
 {{- $curNew := get $ns "new" -}}
 {{- if eq $curNew "" }}
 stonewall
-{{- $_ := set $ns "new" $jobname -}}
+{{ $_ := set $ns "new" $jobname -}}
 {{- end }}
 {{- $inc := includeName $ptype -}}
 {{- $ctx := dict
