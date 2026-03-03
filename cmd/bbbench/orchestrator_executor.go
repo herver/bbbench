@@ -211,7 +211,26 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 			continue
 		}
 
-		fmt.Printf("Phase %d/%d: ", phaseIdx+1, maxPhases)
+		// Get phase name from first drive's workload for display
+		phaseName := ""
+		for _, drive := range ec.drives {
+			workload := ec.workloads[drive.Device.Name]
+			if phaseIdx < len(workload.Phases) && len(workload.Phases[phaseIdx]) > 0 {
+				// Use first job name from the phase
+				jobNames := make([]string, len(workload.Phases[phaseIdx]))
+				for i, job := range workload.Phases[phaseIdx] {
+					jobNames[i] = job.Name
+				}
+				phaseName = strings.Join(jobNames, ", ")
+				break
+			}
+		}
+
+		if phaseName != "" {
+			fmt.Printf("Phase %d/%d (%s): ", phaseIdx+1, maxPhases, phaseName)
+		} else {
+			fmt.Printf("Phase %d/%d: ", phaseIdx+1, maxPhases)
+		}
 
 		var wg sync.WaitGroup
 		var phaseErrors []error
@@ -314,7 +333,14 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 				continue
 			}
 
-			fmt.Printf("  Phase %d/%d: ", phaseIdx+1, len(workload.Phases))
+			// Get phase name from job names
+			jobNames := make([]string, len(phase))
+			for i, job := range phase {
+				jobNames[i] = job.Name
+			}
+			phaseName := strings.Join(jobNames, ", ")
+
+			fmt.Printf("  Phase %d/%d (%s): ", phaseIdx+1, len(workload.Phases), phaseName)
 			phaseStart := time.Now()
 
 			result := ec.executePhase(drive, phase, phaseIdx)
