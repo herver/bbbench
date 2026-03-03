@@ -149,6 +149,8 @@ func groupJobsIntoPhases(jobs []FioJob) [][]FioJob {
 }
 
 // buildPhaseFioFile generates a temporary fio file for a specific phase.
+// It removes wait_for directives that reference jobs from other phases,
+// since phases run sequentially in separate fio invocations.
 func buildPhaseFioFile(workload *FioWorkload, phase []FioJob) string {
 	var sb strings.Builder
 
@@ -156,11 +158,43 @@ func buildPhaseFioFile(workload *FioWorkload, phase []FioJob) string {
 	sb.WriteString(workload.GlobalSection)
 	sb.WriteString("\n")
 
-	// Add jobs for this phase
+	// Build map of job names in this phase
+	jobsInPhase := make(map[string]bool)
 	for _, job := range phase {
-		sb.WriteString(job.Section)
+		jobsInPhase[job.Name] = true
+	}
+
+	// Add jobs for this phase, filtering wait_for directives
+	for _, job := range phase {
+		sb.WriteString(filterJobSection(job, jobsInPhase))
 		sb.WriteString("\n")
 	}
 
 	return sb.String()
+}
+
+// filterJobSection removes wait_for directives that reference jobs not in this phase.
+func filterJobSection(job FioJob, jobsInPhase map[string]bool) string {
+	lines := strings.Split(job.Section, "\n")
+	var filtered []string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Skip wait_for directives that reference jobs not in this phase
+		if strings.HasPrefix(trimmed, "wait_for=") {
+			parts := strings.SplitN(trimmed, "=", 2)
+			if len(parts) == 2 {
+				waitForJob := strings.TrimSpace(parts[1])
+				if !jobsInPhase[waitForJob] {
+					// Skip this line - it references a job from another phase
+					continue
+				}
+			}
+		}
+
+		filtered = append(filtered, line)
+	}
+
+	return strings.Join(filtered, "\n")
 }
