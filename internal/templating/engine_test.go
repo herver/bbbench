@@ -24,7 +24,7 @@ func TestRenderFioTemplate(t *testing.T) {
 		"Serial":       "S1",
 		"Host":         "host1",
 	}
-	out, err := eng.Render("criteo_disk.fio", ctx)
+	out, err := eng.Render("disk.fio", ctx)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

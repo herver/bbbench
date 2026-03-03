@@ -65,7 +65,7 @@ The main binary (`cmd/bbbench/main.go`) is a simple command router with no exter
    - `internal/scsi`: Queries SCSI write cache (WCE) via SG_IO ioctl on Linux
 
 4. **Template Rendering**: For each discovered device, renders two files:
-   - `criteo_disk.fio.gotmpl` → fio job file
+   - `disk.fio.gotmpl` → fio job file
    - `output.yml.gotmpl` → fioplot configuration
 
 ### Key Packages

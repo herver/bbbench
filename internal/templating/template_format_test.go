@@ -51,7 +51,7 @@ func TestFioTemplateJobHeadersOnSeparateLines(t *testing.T) {
 		"WCE":    nil,
 	}
 
-	output, err := eng.Render("criteo_disk.fio", ctx)
+	output, err := eng.Render("disk.fio", ctx)
 	if err != nil {
 		t.Fatalf("Failed to render template: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestFioTemplateGeneratesValidJobSections(t *testing.T) {
 		"WCE":    nil,
 	}
 
-	output, err := eng.Render("criteo_disk.fio", ctx)
+	output, err := eng.Render("disk.fio", ctx)
 	if err != nil {
 		t.Fatalf("Failed to render template: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestFioTemplateNoJobsWithZeroCount(t *testing.T) {
 		"WCE":    nil,
 	}
 
-	output, err := eng.Render("criteo_disk.fio", ctx)
+	output, err := eng.Render("disk.fio", ctx)
 	if err != nil {
 		t.Fatalf("Failed to render template: %v", err)
 	}

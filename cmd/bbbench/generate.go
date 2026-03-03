@@ -125,7 +125,7 @@ func runGenerate(args []string) error {
 			"WCE":          wcePtr,
 		}
 
-		fioOut, err := eng.Render("criteo_disk.fio", ctx)
+		fioOut, err := eng.Render("disk.fio", ctx)
 		if err != nil {
 			return fmt.Errorf("render fio: %w", err)
 		}

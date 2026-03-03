@@ -16,7 +16,7 @@ bbbench:
   default:
     template:
       path: "./templates"
-      filename: "criteo_disk.fio.tmpl"
+      filename: "disk.fio.tmpl"
     template_fioplot:
       filename: "output.yml.tmpl"
   workloadsdb:
