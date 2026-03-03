@@ -21,7 +21,7 @@ thread
 {{- $count := index $wdef.Process $ptype -}}
 {{- if gt $count 0 }}
 {{- $widx := add $wi 1 -}}
-{{- $jobname := printf "%03d-%s-%s-%s" $widx $.Device $workload $ptype -}}
+{{- $jobname := printf "%03d-%s-%s-%s" $widx $.Device $workload $ptype }}
 [{{ $jobname }}]
 {{- $curNew := get $ns "new" -}}
 {{- if eq $curNew "" }}

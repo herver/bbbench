@@ -83,6 +83,11 @@ func runGenerate(args []string) error {
 		workloadType := disk.WorkloadType()
 		workloads := cfg.BBBench.Workloads[workloadType]
 
+		logger.Info("disk workloads", "device", disk.Path, "type", workloadType, "workloads_count", len(workloads))
+		if len(workloads) == 0 {
+			logger.Warn("no workloads defined for device type", "type", workloadType, "device", disk.Path)
+		}
+
 		diskMap := map[string]any{
 			"path":        disk.Path,
 			"model":       util.SanitizeFilename(disk.Model, "_"),
