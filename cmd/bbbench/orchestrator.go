@@ -30,12 +30,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"bbbench/internal/blockdev"
 	"bbbench/internal/config"
@@ -72,6 +75,13 @@ func runOrchestrator(args []string) error {
 	if os.Geteuid() != 0 {
 		return errors.New("bbbench orchestrator must run as root")
 	}
+
+	// Acquire lock to prevent multiple orchestrator instances
+	if err := acquireOrchestratorLock(); err != nil {
+		return err
+	}
+	defer releaseOrchestratorLock()
+	defer ResetStatus() // Reset web status when done
 
 	if *mode != "parallel-sync" && *mode != "sequential" {
 		return fmt.Errorf("invalid mode: %s (must be parallel-sync or sequential)", *mode)
@@ -214,6 +224,21 @@ func runOrchestrator(args []string) error {
 		// In dry-run mode, just show what would be executed
 		return displayDryRun(coordinator)
 	}
+
+	// Start web server in background
+	srv := newWebServer("0.0.0.0:12345")
+	go func() {
+		logger.Info("starting web server from orchestrator", "addr", srv.Addr)
+		fmt.Printf("Web server available at http://0.0.0.0:12345\n\n")
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("web server error", "err", err)
+		}
+	}()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	}()
 
 	// Execute based on mode
 	var execErr error

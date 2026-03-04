@@ -184,6 +184,25 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 	logger.Info("parallel-sync execution", "phases", maxPhases, "drives", len(ec.drives))
 	fmt.Printf("Executing %d phase(s) across %d drive(s)\n\n", maxPhases, len(ec.drives))
 
+	// Initialize web status
+	UpdateStatus(func(s *BenchmarkStatus) {
+		s.Running = true
+		s.StartTime = ec.startTime
+		s.Mode = ec.mode
+		s.TotalPhases = maxPhases
+		s.CompletedPhases = 0
+		s.CurrentPhase = 0
+		// Build drive status list
+		s.Drives = make([]DriveStatus, len(ec.drives))
+		for i, drive := range ec.drives {
+			s.Drives[i] = DriveStatus{
+				Name:   drive.Device.Name,
+				Vendor: drive.Device.Vendor,
+				Model:  drive.Device.Model,
+			}
+		}
+	})
+
 	// Execute each phase
 	for phaseIdx := 0; phaseIdx < maxPhases; phaseIdx++ {
 		// Check for interruption
@@ -232,6 +251,11 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 			fmt.Printf("Phase %d/%d: ", phaseIdx+1, maxPhases)
 		}
 
+		// Update web status for current phase
+		UpdateStatus(func(s *BenchmarkStatus) {
+			s.CurrentPhase = phaseIdx + 1
+		})
+
 		var wg sync.WaitGroup
 		var phaseErrors []error
 		var mu sync.Mutex
@@ -273,6 +297,11 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 		wg.Wait()
 		elapsed := time.Since(startTime)
 
+		// Update completed phases count
+		UpdateStatus(func(s *BenchmarkStatus) {
+			s.CompletedPhases = phaseIdx + 1
+		})
+
 		if len(phaseErrors) > 0 {
 			fmt.Printf("FAILED (%.1fs) - errors:\n", elapsed.Seconds())
 			for _, err := range phaseErrors {
@@ -300,6 +329,33 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 func (ec *ExecutionCoordinator) executeSequential() error {
 	logger.Info("sequential execution", "drives", len(ec.drives))
 	fmt.Printf("Executing benchmarks sequentially on %d drive(s)\n\n", len(ec.drives))
+
+	// Count total phases across all drives
+	totalPhases := 0
+	for _, workload := range ec.workloads {
+		totalPhases += len(workload.Phases)
+	}
+
+	// Initialize web status
+	UpdateStatus(func(s *BenchmarkStatus) {
+		s.Running = true
+		s.StartTime = ec.startTime
+		s.Mode = ec.mode
+		s.TotalPhases = totalPhases
+		s.CompletedPhases = 0
+		s.CurrentPhase = 0
+		// Build drive status list
+		s.Drives = make([]DriveStatus, len(ec.drives))
+		for i, drive := range ec.drives {
+			s.Drives[i] = DriveStatus{
+				Name:   drive.Device.Name,
+				Vendor: drive.Device.Vendor,
+				Model:  drive.Device.Model,
+			}
+		}
+	})
+
+	completedPhases := 0
 
 	for i, drive := range ec.drives {
 		// Check for interruption
@@ -343,6 +399,11 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 			fmt.Printf("  Phase %d/%d (%s): ", phaseIdx+1, len(workload.Phases), phaseName)
 			phaseStart := time.Now()
 
+			// Update web status
+			UpdateStatus(func(s *BenchmarkStatus) {
+				s.CurrentPhase = completedPhases + 1
+			})
+
 			result := ec.executePhase(drive, phase, phaseIdx)
 
 			ec.mu.Lock()
@@ -355,6 +416,12 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 			} else {
 				fmt.Printf("COMPLETE (%.1fs)\n", elapsed.Seconds())
 			}
+
+			// Update completed phases count
+			completedPhases++
+			UpdateStatus(func(s *BenchmarkStatus) {
+				s.CompletedPhases = completedPhases
+			})
 
 			// Save state after each phase
 			if err := ec.saveState(); err != nil {

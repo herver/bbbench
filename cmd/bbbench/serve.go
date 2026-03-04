@@ -16,8 +16,13 @@ import (
 // runServe starts the web server for the bbbench GUI.
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	addr := fs.String("addr", "[::1]:12345", "address to bind web server (IPv6 localhost by default)")
+	addr := fs.String("addr", "0.0.0.0:12345", "address to bind web server (all interfaces by default)")
 	_ = fs.Parse(args)
+
+	// Check if orchestrator is running
+	if isOrchestratorRunning() {
+		return errors.New("orchestrator is already running with web interface enabled\nConnect to http://0.0.0.0:12345 to view status")
+	}
 
 	srv := newWebServer(*addr)
 
