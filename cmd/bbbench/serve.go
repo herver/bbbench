@@ -67,10 +67,13 @@ func newWebServer(addr string) *http.Server {
 	// API endpoints
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/results", handleResultsList)
+	mux.HandleFunc("/api/results/detail", handleResultDetail)
 	mux.HandleFunc("/api/results/graphs", handleResultGraphs)
 
 	// HTML pages
 	mux.HandleFunc("/status", handleStatusPage)
+	mux.HandleFunc("/results", handleBrowsePage)
+	mux.HandleFunc("/result", handleResultDetailPage)
 	mux.HandleFunc("/graphs", handleGraphsPage)
 	mux.HandleFunc("/", handleIndex)
 
@@ -145,6 +148,7 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
         <h3>Available Pages:</h3>
         <ul>
             <li><a href="/status">Status</a> - View current benchmark execution status</li>
+            <li><a href="/results">Browse Results</a> - Browse and search benchmark results</li>
             <li><a href="/api/results">Results API</a> - List all benchmark results (JSON)</li>
             <li><a href="/health">Health</a> - Server health check</li>
         </ul>
