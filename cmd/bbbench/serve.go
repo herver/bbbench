@@ -75,6 +75,7 @@ func newWebServer(addr string) *http.Server {
 	mux.HandleFunc("/results", handleBrowsePage)
 	mux.HandleFunc("/result", handleResultDetailPage)
 	mux.HandleFunc("/graphs", handleGraphsPage)
+	mux.HandleFunc("/export", handleExportHTML)
 	mux.HandleFunc("/", handleIndex)
 
 	return &http.Server{
