@@ -38,12 +38,8 @@ func (i driveItem) Description() string {
 	if d.Rotational {
 		typ = "HDD"
 	}
-	status := "✓ fio file found"
-	if !i.drive.FioExists {
-		status = "✗ fio file missing"
-	}
-	return fmt.Sprintf("%s | %s %s | %d GB | %s | %s",
-		d.Vendor, d.Model, d.Serial, d.CapacityGB(), typ, status)
+	return fmt.Sprintf("%s | %s %s | %d GB | %s",
+		d.Vendor, d.Model, d.Serial, d.CapacityGB(), typ)
 }
 
 // itemDelegate implements list.ItemDelegate for custom rendering.
@@ -167,10 +163,10 @@ func runDriveSelectionTUI(drives []DriveInfo) ([]DriveInfo, error) {
 		return nil, fmt.Errorf("selection cancelled")
 	}
 
-	// Return only selected drives with fio files
+	// Return all selected drives (fio files will be auto-generated if missing)
 	var selected []DriveInfo
 	for _, d := range result.drives {
-		if d.Selected && d.FioExists {
+		if d.Selected {
 			selected = append(selected, d)
 		}
 	}

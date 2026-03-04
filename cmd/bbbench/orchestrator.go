@@ -31,13 +31,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"bbbench/internal/blockdev"
@@ -98,8 +101,19 @@ func runOrchestrator(args []string) error {
 		return err
 	}
 
+	// Load DMI info for host identification (needed for auto-generation and discovery)
+	dmiInfo, err := dmi.Load(dmi.OSReader{}, *dmiPath)
+	if err != nil {
+		return fmt.Errorf("read dmi: %w", err)
+	}
+	chassis, err := dmiInfo.ChassisSerial()
+	if err != nil {
+		return fmt.Errorf("read chassis_serial: %w", err)
+	}
+	host := util.SanitizeFilename(chassis, "_")
+
 	// Discover drives and match with fio files
-	drives, err := discoverDrivesWithFioFiles(cfg, *dmiPath, *sysBlock, *verbose)
+	drives, err := discoverDrivesWithFioFiles(cfg, host, *sysBlock, *verbose)
 	if err != nil {
 		return err
 	}
@@ -203,18 +217,33 @@ func runOrchestrator(args []string) error {
 
 	logger.Info("orchestrator start", "mode", *mode, "drives", len(selectedDrives), "output", outDir, "dry_run", *dryRun, "resume", *resume)
 
-	// Check that all drives have fio files
-	var missingDrives []string
+	// Auto-generate missing fio files
+	var missingDevices []blockdev.Device
 	for _, drive := range selectedDrives {
 		if !drive.FioExists {
-			missingDrives = append(missingDrives, drive.Device.Name)
+			missingDevices = append(missingDevices, drive.Device)
 		}
 	}
 
-	if len(missingDrives) > 0 {
-		return fmt.Errorf("fio configuration files not found for %d drive(s): %v\n"+
-			"Run 'sudo ./bbbench generate' first to create configuration files",
-			len(missingDrives), missingDrives)
+	if len(missingDevices) > 0 {
+		fmt.Printf("Auto-generating fio configuration files for %d drive(s)...\n", len(missingDevices))
+
+		// Load templates
+		eng, err := loadTemplatesWithSearch("", dir)
+		if err != nil {
+			return fmt.Errorf("load templates for auto-generation: %w", err)
+		}
+
+		// Determine output base directory
+		outBase := cfg.Fio.Generated.Path
+		outBase = expandUser(outBase)
+
+		// Generate files
+		if err := generateFioFilesForDrives(cfg, eng, missingDevices, host, outBase); err != nil {
+			return fmt.Errorf("auto-generate fio files: %w", err)
+		}
+
+		fmt.Printf("Auto-generation complete.\n\n")
 	}
 
 	if *dryRun {
@@ -269,7 +298,33 @@ func runOrchestrator(args []string) error {
 		displayErr = err
 	}
 
-	logger.Info("orchestrator complete")
+	if execErr != nil {
+		logger.Error("execution error", "err", execErr)
+		fmt.Printf("\nBenchmark execution failed: %v\n", execErr)
+	} else {
+		logger.Info("orchestrator complete")
+		fmt.Println("\nBenchmarks complete!")
+	}
+
+	// Save benchmark summary to output directory
+	if err := saveBenchmarkSummary(coordinator, selectedDrives, *mode, outDir); err != nil {
+		logger.Error("save benchmark summary", "err", err)
+		fmt.Printf("Warning: failed to save benchmark summary: %v\n", err)
+	}
+
+	// Keep web server running until user interrupts
+	fmt.Printf("\nWeb server still running at http://0.0.0.0:12345\n")
+	fmt.Printf("Results available at: %s\n", outDir)
+	fmt.Printf("\nPress Ctrl+C to stop...\n\n")
+
+	// Wait for interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	<-sigChan
+	fmt.Println("\n\nShutting down gracefully...")
+	logger.Info("received interrupt signal")
+
 	return errors.Join(execErr, displayErr)
 }
 
@@ -339,18 +394,7 @@ func (f *DriveFilter) matches(drive DriveInfo) bool {
 }
 
 // discoverDrivesWithFioFiles discovers drives and matches them with generated fio files.
-func discoverDrivesWithFioFiles(cfg *config.Root, dmiPath, sysBlock string, verbose bool) ([]DriveInfo, error) {
-	// Load DMI info for host identification
-	dmiInfo, err := dmi.Load(dmi.OSReader{}, dmiPath)
-	if err != nil {
-		return nil, fmt.Errorf("read dmi: %w", err)
-	}
-	chassis, err := dmiInfo.ChassisSerial()
-	if err != nil {
-		return nil, fmt.Errorf("read chassis_serial: %w", err)
-	}
-	host := util.SanitizeFilename(chassis, "_")
-
+func discoverDrivesWithFioFiles(cfg *config.Root, host, sysBlock string, verbose bool) ([]DriveInfo, error) {
 	// Discover block devices
 	devs, err := blockdev.Discover(blockdev.OSFS{}, sysBlock)
 	if err != nil {
@@ -466,6 +510,85 @@ func displayDryRun(coordinator *ExecutionCoordinator) error {
 
 	fmt.Println("No actual benchmarks were run (dry-run mode)")
 	fmt.Println(repeatString("=", 80))
+
+	return nil
+}
+
+// saveBenchmarkSummary saves a summary of the benchmark run to the output directory.
+func saveBenchmarkSummary(coordinator *ExecutionCoordinator, drives []DriveInfo, mode, outDir string) error {
+	// Generate a unique ID for this run (timestamp-based)
+	runID := fmt.Sprintf("run_%d", time.Now().Unix())
+
+	// Collect all phase results
+	var phases []PhaseResult
+	maxPhases := 0
+	for _, workload := range coordinator.workloads {
+		if len(workload.Phases) > maxPhases {
+			maxPhases = len(workload.Phases)
+		}
+	}
+
+	for phaseIdx := 0; phaseIdx < maxPhases; phaseIdx++ {
+		phaseResult := PhaseResult{
+			PhaseNumber: phaseIdx + 1,
+			FioFiles:    make(map[string]string),
+		}
+
+		// Collect output files for this phase from all drives
+		for _, drive := range drives {
+			deviceName := drive.Device.Name
+			workload := coordinator.workloads[deviceName]
+
+			if phaseIdx < len(workload.Phases) {
+				phase := workload.Phases[phaseIdx]
+				if len(phase) > 0 {
+					// Find the output file for this phase
+					pattern := filepath.Join(outDir, fmt.Sprintf("%s_phase%d_*.json", deviceName, phaseIdx))
+					files, err := filepath.Glob(pattern)
+					if err == nil && len(files) > 0 {
+						// Use the most recent file (in case of multiple)
+						phaseResult.FioFiles[deviceName] = files[len(files)-1]
+					}
+
+					// Set phase name from first job if available
+					if phaseResult.PhaseName == "" && len(phase) > 0 {
+						phaseResult.PhaseName = phase[0].Name
+					}
+				}
+			}
+		}
+
+		if len(phaseResult.FioFiles) > 0 {
+			phases = append(phases, phaseResult)
+		}
+	}
+
+	// Create benchmark result summary
+	summary := BenchmarkResult{
+		ID:        runID,
+		Timestamp: time.Now(),
+		Mode:      mode,
+		Drives:    drives,
+		Phases:    phases,
+		OutputDir: outDir,
+	}
+
+	// Save to JSON file
+	summaryPath := filepath.Join(outDir, fmt.Sprintf("%s_summary.json", runID))
+	data, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal summary: %w", err)
+	}
+
+	if err := os.WriteFile(summaryPath, data, 0644); err != nil {
+		return fmt.Errorf("write summary file: %w", err)
+	}
+
+	logger.Info("saved benchmark summary", "path", summaryPath)
+	fmt.Printf("Saved benchmark summary: %s\n", summaryPath)
+
+	// Add to global results store for immediate viewing
+	globalResultsStore.AddResult(&summary)
 
 	return nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -17,11 +19,18 @@ import (
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "0.0.0.0:12345", "address to bind web server (all interfaces by default)")
+	outputDir := fs.String("output", "~/.bbbench/output", "output directory containing benchmark results")
 	_ = fs.Parse(args)
 
 	// Check if orchestrator is running
 	if isOrchestratorRunning() {
 		return errors.New("orchestrator is already running with web interface enabled\nConnect to http://0.0.0.0:12345 to view status")
+	}
+
+	// Load existing benchmark results from output directory
+	if err := loadBenchmarkSummaries(expandUser(*outputDir)); err != nil {
+		logger.Warn("failed to load benchmark summaries", "err", err)
+		fmt.Printf("Warning: failed to load existing results: %v\n", err)
 	}
 
 	srv := newWebServer(*addr)
@@ -182,4 +191,55 @@ func isServerListening(addr string) bool {
 	}
 	conn.Close()
 	return true
+}
+
+// loadBenchmarkSummaries loads all benchmark summary files from the output directory.
+func loadBenchmarkSummaries(outputDir string) error {
+	// Check if directory exists
+	if _, err := os.Stat(outputDir); os.IsNotExist(err) {
+		logger.Info("output directory does not exist", "dir", outputDir)
+		return nil
+	}
+
+	// Find all summary files
+	pattern := filepath.Join(outputDir, "run_*_summary.json")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return fmt.Errorf("glob summary files: %w", err)
+	}
+
+	logger.Info("loading benchmark summaries", "dir", outputDir, "files", len(files))
+	fmt.Printf("Loading %d benchmark result(s) from %s\n", len(files), outputDir)
+
+	loadedCount := 0
+	for _, file := range files {
+		if err := loadBenchmarkSummary(file); err != nil {
+			logger.Error("failed to load summary", "file", file, "err", err)
+			// Continue loading other files
+		} else {
+			loadedCount++
+		}
+	}
+
+	fmt.Printf("Successfully loaded %d benchmark result(s)\n\n", loadedCount)
+	return nil
+}
+
+// loadBenchmarkSummary loads a single benchmark summary file.
+func loadBenchmarkSummary(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read file: %w", err)
+	}
+
+	var summary BenchmarkResult
+	if err := json.Unmarshal(data, &summary); err != nil {
+		return fmt.Errorf("unmarshal json: %w", err)
+	}
+
+	// Add to global results store
+	globalResultsStore.AddResult(&summary)
+
+	logger.Debug("loaded benchmark summary", "id", summary.ID, "timestamp", summary.Timestamp)
+	return nil
 }
