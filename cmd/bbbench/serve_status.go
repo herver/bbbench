@@ -294,13 +294,28 @@ func handleStatusPage(w http.ResponseWriter, r *http.Request) {
             if (status.drives && status.drives.length > 0) {
                 let html = '<div class="drives-grid">';
                 status.drives.forEach(drive => {
+                    // Determine status display
+                    let statusText = drive.status || 'pending';
+                    let statusColor = '#666';
+                    if (statusText === 'running') {
+                        statusColor = '#4caf50';
+                        statusText = 'Running';
+                    } else if (statusText === 'complete') {
+                        statusColor = '#2196f3';
+                        statusText = 'Complete';
+                    } else if (statusText === 'error') {
+                        statusColor = '#f44336';
+                        statusText = 'Error';
+                    } else {
+                        statusText = 'Pending';
+                    }
+
                     html += '<div class="drive-card">' +
                         '<div class="drive-name">' + drive.name + '</div>' +
                         '<div class="drive-detail">' + drive.vendor + ' ' + drive.model + '</div>' +
-                        '<div class="drive-detail">Device: ' + drive.device + '</div>' +
-                        '<div class="drive-detail">Status: ' + drive.status + '</div>';
-                    if (drive.phase_name) {
-                        html += '<div class="drive-detail">Current: ' + drive.phase_name + '</div>';
+                        '<div class="drive-detail" style="color: ' + statusColor + '; font-weight: 600;">Status: ' + statusText + '</div>';
+                    if (drive.phase_name && drive.status === 'running') {
+                        html += '<div class="drive-detail">Phase: ' + drive.phase_name + '</div>';
                     }
                     if (drive.error) {
                         html += '<div class="drive-detail" style="color: #f44336;">Error: ' + drive.error + '</div>';

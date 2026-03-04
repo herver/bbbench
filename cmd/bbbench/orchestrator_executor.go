@@ -196,10 +196,11 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 		s.Drives = make([]DriveStatus, len(ec.drives))
 		for i, drive := range ec.drives {
 			s.Drives[i] = DriveStatus{
-				Name:   drive.Device.Name,
-				Device: drive.Device.Name,
-				Vendor: drive.Device.Vendor,
-				Model:  drive.Device.Model,
+				Name:         drive.Device.Name,
+				Vendor:       drive.Device.Vendor,
+				Model:        drive.Device.Model,
+				Status:       "pending",
+				CurrentPhase: 0,
 			}
 		}
 	})
@@ -255,6 +256,12 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 		// Update web status for current phase
 		UpdateStatus(func(s *BenchmarkStatus) {
 			s.CurrentPhase = phaseIdx + 1
+			// Mark all drives as running this phase
+			for i := range s.Drives {
+				s.Drives[i].Status = "running"
+				s.Drives[i].CurrentPhase = phaseIdx + 1
+				s.Drives[i].PhaseName = phaseName
+			}
 		})
 
 		var wg sync.WaitGroup
@@ -349,10 +356,11 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 		s.Drives = make([]DriveStatus, len(ec.drives))
 		for i, drive := range ec.drives {
 			s.Drives[i] = DriveStatus{
-				Name:   drive.Device.Name,
-				Device: drive.Device.Name,
-				Vendor: drive.Device.Vendor,
-				Model:  drive.Device.Model,
+				Name:         drive.Device.Name,
+				Vendor:       drive.Device.Vendor,
+				Model:        drive.Device.Model,
+				Status:       "pending",
+				CurrentPhase: 0,
 			}
 		}
 	})
@@ -370,6 +378,16 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 		}
 
 		fmt.Printf("Drive %d/%d: %s\n", i+1, len(ec.drives), drive.Device.Name)
+
+		// Mark this drive as active
+		UpdateStatus(func(s *BenchmarkStatus) {
+			for j := range s.Drives {
+				if s.Drives[j].Name == drive.Device.Name {
+					s.Drives[j].Status = "running"
+					break
+				}
+			}
+		})
 
 		workload := ec.workloads[drive.Device.Name]
 		startTime := time.Now()
@@ -401,9 +419,17 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 			fmt.Printf("  Phase %d/%d (%s): ", phaseIdx+1, len(workload.Phases), phaseName)
 			phaseStart := time.Now()
 
-			// Update web status
+			// Update web status - mark this drive as running this phase
 			UpdateStatus(func(s *BenchmarkStatus) {
 				s.CurrentPhase = completedPhases + 1
+				for j := range s.Drives {
+					if s.Drives[j].Name == drive.Device.Name {
+						s.Drives[j].CurrentPhase = phaseIdx + 1
+						s.Drives[j].PhaseName = phaseName
+						s.Drives[j].Status = "running"
+						break
+					}
+				}
 			})
 
 			result := ec.executePhase(drive, phase, phaseIdx)
@@ -435,6 +461,17 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 
 		totalElapsed := time.Since(startTime)
 		fmt.Printf("  Total: %.1f minutes\n\n", totalElapsed.Minutes())
+
+		// Mark drive as complete
+		UpdateStatus(func(s *BenchmarkStatus) {
+			for j := range s.Drives {
+				if s.Drives[j].Name == drive.Device.Name {
+					s.Drives[j].Status = "complete"
+					s.Drives[j].PhaseName = ""
+					break
+				}
+			}
+		})
 	}
 
 	ec.cleanup()
