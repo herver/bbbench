@@ -64,7 +64,11 @@ func newWebServer(addr string) *http.Server {
 	// Health check endpoint
 	mux.HandleFunc("/health", handleHealth)
 
-	// Root endpoint
+	// API endpoints
+	mux.HandleFunc("/api/status", handleStatus)
+
+	// HTML pages
+	mux.HandleFunc("/status", handleStatusPage)
 	mux.HandleFunc("/", handleIndex)
 
 	return &http.Server{
@@ -134,7 +138,12 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
     </div>
     <div class="content">
         <h2>Welcome</h2>
-        <p>The web interface is running. Status page and benchmark results will appear here.</p>
+        <p>The web interface is running.</p>
+        <h3>Available Pages:</h3>
+        <ul>
+            <li><a href="/status">Status</a> - View current benchmark execution status</li>
+            <li><a href="/health">Health</a> - Server health check</li>
+        </ul>
         <p>Use the CLI to start benchmarks: <code>bbbench orchestrator</code></p>
     </div>
 </body>
