@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -30,28 +31,12 @@ func TestNewWebServer(t *testing.T) {
 }
 
 func TestHandleHealth(t *testing.T) {
-	srv := newWebServer("[::1]:0")
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
 
-	// Start server in background
-	go srv.ListenAndServe()
-	defer srv.Shutdown(context.Background())
+	handleHealth(w, req)
 
-	// Wait for server to start
-	time.Sleep(100 * time.Millisecond)
-
-	// Get actual listening address
-	addr := srv.Addr
-	if strings.HasPrefix(addr, "[::1]:0") || strings.HasPrefix(addr, ":0") {
-		// Server is listening but we don't know the port
-		// Skip the actual HTTP test in this case
-		t.Skip("Cannot determine actual port for :0 binding")
-	}
-
-	// Test health endpoint
-	resp, err := http.Get("http://" + addr + "/health")
-	if err != nil {
-		t.Fatalf("GET /health failed: %v", err)
-	}
+	resp := w.Result()
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -75,25 +60,12 @@ func TestHandleHealth(t *testing.T) {
 }
 
 func TestHandleIndex(t *testing.T) {
-	srv := newWebServer("[::1]:0")
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
 
-	// Start server in background
-	go srv.ListenAndServe()
-	defer srv.Shutdown(context.Background())
+	handleIndex(w, req)
 
-	// Wait for server to start
-	time.Sleep(100 * time.Millisecond)
-
-	addr := srv.Addr
-	if strings.HasPrefix(addr, "[::1]:0") || strings.HasPrefix(addr, ":0") {
-		t.Skip("Cannot determine actual port for :0 binding")
-	}
-
-	// Test root endpoint
-	resp, err := http.Get("http://" + addr + "/")
-	if err != nil {
-		t.Fatalf("GET / failed: %v", err)
-	}
+	resp := w.Result()
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -119,26 +91,28 @@ func TestHandleIndex(t *testing.T) {
 	if !strings.Contains(html, "Block Device Benchmark") {
 		t.Error("Index page missing description")
 	}
+
+	// Check for navigation links
+	if !strings.Contains(html, "/status") {
+		t.Error("Index page missing status link")
+	}
+
+	if !strings.Contains(html, "/results") {
+		t.Error("Index page missing results link")
+	}
+
+	if !strings.Contains(html, "/api/results") {
+		t.Error("Index page missing API link")
+	}
 }
 
 func TestHandle404(t *testing.T) {
-	srv := newWebServer("[::1]:0")
+	req := httptest.NewRequest("GET", "/nonexistent", nil)
+	w := httptest.NewRecorder()
 
-	go srv.ListenAndServe()
-	defer srv.Shutdown(context.Background())
+	handleIndex(w, req)
 
-	time.Sleep(100 * time.Millisecond)
-
-	addr := srv.Addr
-	if strings.HasPrefix(addr, "[::1]:0") || strings.HasPrefix(addr, ":0") {
-		t.Skip("Cannot determine actual port for :0 binding")
-	}
-
-	// Test non-existent path
-	resp, err := http.Get("http://" + addr + "/nonexistent")
-	if err != nil {
-		t.Fatalf("GET /nonexistent failed: %v", err)
-	}
+	resp := w.Result()
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNotFound {
@@ -180,5 +154,82 @@ func TestGetListenAddr(t *testing.T) {
 	_, err = getListenAddr(srv2)
 	if err == nil {
 		t.Error("getListenAddr should fail with empty server address")
+	}
+}
+
+func TestAllRoutesRegistered(t *testing.T) {
+	srv := newWebServer("[::1]:12345")
+	mux, ok := srv.Handler.(*http.ServeMux)
+	if !ok {
+		t.Fatal("Server handler is not *http.ServeMux")
+	}
+
+	// Test that all expected routes respond (not 404)
+	routes := []struct {
+		path           string
+		expectedStatus int
+	}{
+		{"/health", http.StatusOK},
+		{"/api/status", http.StatusOK},
+		{"/api/results", http.StatusOK},
+		{"/api/results/detail", http.StatusBadRequest}, // requires ID
+		{"/api/results/graphs", http.StatusBadRequest}, // requires ID
+		{"/status", http.StatusOK},
+		{"/results", http.StatusOK},
+		{"/result", http.StatusBadRequest}, // requires ID
+		{"/graphs", http.StatusBadRequest}, // requires ID
+		{"/export", http.StatusBadRequest}, // requires ID
+		{"/", http.StatusOK},
+		{"/nonexistent", http.StatusNotFound},
+	}
+
+	for _, route := range routes {
+		req := httptest.NewRequest("GET", route.path, nil)
+		w := httptest.NewRecorder()
+
+		mux.ServeHTTP(w, req)
+
+		if w.Code != route.expectedStatus {
+			t.Errorf("Route %s: got status %d, want %d", route.path, w.Code, route.expectedStatus)
+		}
+	}
+}
+
+func TestServerConfiguration(t *testing.T) {
+	srv := newWebServer("[::1]:8080")
+
+	// Verify server configuration
+	if srv.Addr != "[::1]:8080" {
+		t.Errorf("Addr = %q, want [::1]:8080", srv.Addr)
+	}
+
+	if srv.ReadTimeout != 15*time.Second {
+		t.Errorf("ReadTimeout = %v, want 15s", srv.ReadTimeout)
+	}
+
+	if srv.WriteTimeout != 15*time.Second {
+		t.Errorf("WriteTimeout = %v, want 15s", srv.WriteTimeout)
+	}
+
+	if srv.IdleTimeout != 60*time.Second {
+		t.Errorf("IdleTimeout = %v, want 60s", srv.IdleTimeout)
+	}
+
+	if srv.Handler == nil {
+		t.Error("Handler should not be nil")
+	}
+}
+
+func TestHandleIndexRejectsNonRoot(t *testing.T) {
+	req := httptest.NewRequest("GET", "/some-path", nil)
+	w := httptest.NewRecorder()
+
+	handleIndex(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("Non-root path should return 404, got %d", resp.StatusCode)
 	}
 }
