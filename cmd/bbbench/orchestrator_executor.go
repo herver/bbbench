@@ -197,6 +197,7 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 		for i, drive := range ec.drives {
 			s.Drives[i] = DriveStatus{
 				Name:   drive.Device.Name,
+				Device: drive.Device.Name,
 				Vendor: drive.Device.Vendor,
 				Model:  drive.Device.Model,
 			}
@@ -349,6 +350,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 		for i, drive := range ec.drives {
 			s.Drives[i] = DriveStatus{
 				Name:   drive.Device.Name,
+				Device: drive.Device.Name,
 				Vendor: drive.Device.Vendor,
 				Model:  drive.Device.Model,
 			}
