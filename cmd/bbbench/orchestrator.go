@@ -203,6 +203,20 @@ func runOrchestrator(args []string) error {
 
 	logger.Info("orchestrator start", "mode", *mode, "drives", len(selectedDrives), "output", outDir, "dry_run", *dryRun, "resume", *resume)
 
+	// Check that all drives have fio files
+	var missingDrives []string
+	for _, drive := range selectedDrives {
+		if !drive.FioExists {
+			missingDrives = append(missingDrives, drive.Device.Name)
+		}
+	}
+
+	if len(missingDrives) > 0 {
+		return fmt.Errorf("fio configuration files not found for %d drive(s): %v\n"+
+			"Run 'sudo ./bbbench generate' first to create configuration files",
+			len(missingDrives), missingDrives)
+	}
+
 	if *dryRun {
 		fmt.Printf("DRY RUN: Would run benchmarks on %d drive(s) in %s mode\n", len(selectedDrives), *mode)
 	} else {

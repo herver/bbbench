@@ -92,6 +92,17 @@ func newExecutionCoordinator(drives []DriveInfo, mode, outputDir string) (*Execu
 
 	// Parse and validate all fio files
 	for _, drive := range drives {
+		// Validate fio file exists
+		if _, err := os.Stat(drive.FioFilePath); err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("fio configuration file not found for drive %s: %s\n"+
+					"Expected file: %s\n"+
+					"This should have been auto-generated. Please report this issue.",
+					drive.Device.Name, drive.Device.Model, drive.FioFilePath)
+			}
+			return nil, fmt.Errorf("check fio file for %s: %w", drive.Device.Name, err)
+		}
+
 		workload, err := parseFioFile(drive.FioFilePath)
 		if err != nil {
 			return nil, fmt.Errorf("parse fio file for %s: %w", drive.Device.Name, err)
@@ -195,10 +206,18 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 		// Build drive status list
 		s.Drives = make([]DriveStatus, len(ec.drives))
 		for i, drive := range ec.drives {
+			driveType := "SSD"
+			if drive.Device.Rotational {
+				driveType = "HDD"
+			}
+			capacityGB := drive.Device.CapacityBytes / (1024 * 1024 * 1024)
 			s.Drives[i] = DriveStatus{
 				Name:         drive.Device.Name,
 				Vendor:       drive.Device.Vendor,
 				Model:        drive.Device.Model,
+				Serial:       drive.Device.Serial,
+				Capacity:     capacityGB,
+				Type:         driveType,
 				Status:       "pending",
 				CurrentPhase: 0,
 			}
@@ -355,10 +374,18 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 		// Build drive status list
 		s.Drives = make([]DriveStatus, len(ec.drives))
 		for i, drive := range ec.drives {
+			driveType := "SSD"
+			if drive.Device.Rotational {
+				driveType = "HDD"
+			}
+			capacityGB := drive.Device.CapacityBytes / (1024 * 1024 * 1024)
 			s.Drives[i] = DriveStatus{
 				Name:         drive.Device.Name,
 				Vendor:       drive.Device.Vendor,
 				Model:        drive.Device.Model,
+				Serial:       drive.Device.Serial,
+				Capacity:     capacityGB,
+				Type:         driveType,
 				Status:       "pending",
 				CurrentPhase: 0,
 			}

@@ -40,6 +40,9 @@ type DriveStatus struct {
 	Device        string `json:"device"`
 	Vendor        string `json:"vendor"`
 	Model         string `json:"model"`
+	Serial        string `json:"serial"`
+	Capacity      uint64 `json:"capacity_gb"`
+	Type          string `json:"type"` // "SSD" or "HDD"
 	CurrentPhase  int    `json:"current_phase"`
 	PhaseName     string `json:"phase_name,omitempty"`
 	Status        string `json:"status"` // "running", "complete", "error", "pending"
@@ -292,8 +295,11 @@ func handleStatusPage(w http.ResponseWriter, r *http.Request) {
 
             // Update drives list
             if (status.drives && status.drives.length > 0) {
+                // Sort drives alphabetically by name
+                const sortedDrives = status.drives.slice().sort((a, b) => a.name.localeCompare(b.name));
+
                 let html = '<div class="drives-grid">';
-                status.drives.forEach(drive => {
+                sortedDrives.forEach(drive => {
                     // Determine status display
                     let statusText = drive.status || 'pending';
                     let statusColor = '#666';
@@ -311,9 +317,15 @@ func handleStatusPage(w http.ResponseWriter, r *http.Request) {
                     }
 
                     html += '<div class="drive-card">' +
-                        '<div class="drive-name">' + drive.name + '</div>' +
-                        '<div class="drive-detail">' + drive.vendor + ' ' + drive.model + '</div>' +
-                        '<div class="drive-detail" style="color: ' + statusColor + '; font-weight: 600;">Status: ' + statusText + '</div>';
+                        '<div class="drive-name">' + drive.name + ' (' + (drive.type || 'Unknown') + ')</div>' +
+                        '<div class="drive-detail">' + drive.vendor + ' ' + drive.model + '</div>';
+                    if (drive.serial) {
+                        html += '<div class="drive-detail">S/N: ' + drive.serial + '</div>';
+                    }
+                    if (drive.capacity_gb) {
+                        html += '<div class="drive-detail">Capacity: ' + drive.capacity_gb + ' GB</div>';
+                    }
+                    html += '<div class="drive-detail" style="color: ' + statusColor + '; font-weight: 600;">Status: ' + statusText + '</div>';
                     if (drive.phase_name && drive.status === 'running') {
                         html += '<div class="drive-detail">Phase: ' + drive.phase_name + '</div>';
                     }
