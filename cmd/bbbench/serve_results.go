@@ -22,11 +22,12 @@ type BenchmarkResult struct {
 
 // PhaseResult represents results for a single phase.
 type PhaseResult struct {
-	PhaseNumber int               `json:"phase_number"`
-	PhaseName   string            `json:"phase_name"`
-	Duration    float64           `json:"duration_seconds"`
-	Jobs        []JobResult       `json:"jobs"`
-	FioFiles    map[string]string `json:"fio_files"` // device -> fio output file path
+	PhaseNumber int                          `json:"phase_number"`
+	PhaseName   string                       `json:"phase_name"`
+	Duration    float64                      `json:"duration_seconds"`
+	Jobs        []JobResult                  `json:"jobs"`
+	FioFiles    map[string]string            `json:"fio_files"`            // device -> fio output file path
+	LogSeries   map[string]*DeviceTimeSeries `json:"log_series,omitempty"` // device -> time-series data
 }
 
 // JobResult represents results for a single fio job.
@@ -57,6 +58,20 @@ type LatencyStats struct {
 	P50    float64 `json:"p50_ns"`
 	P95    float64 `json:"p95_ns"`
 	P99    float64 `json:"p99_ns"`
+}
+
+// TimePoint is one data point from a fio time-series log file.
+type TimePoint struct {
+	T float64 `json:"t"` // seconds from phase start
+	R float64 `json:"r"` // read value (IOPS, MB/s, or µs)
+	W float64 `json:"w"` // write value
+}
+
+// DeviceTimeSeries holds per-device time-series log data for one phase.
+type DeviceTimeSeries struct {
+	IOPS []TimePoint `json:"iops,omitempty"`
+	BW   []TimePoint `json:"bw,omitempty"`  // MB/s
+	Lat  []TimePoint `json:"lat,omitempty"` // µs
 }
 
 // ResultsStore manages benchmark results.

@@ -268,6 +268,19 @@ func runOrchestrator(args []string) error {
 		return displayDryRun(coordinator)
 	}
 
+	// Create live result for web view (updated incrementally as phases complete)
+	runID := fmt.Sprintf("run_%d", time.Now().Unix())
+	liveResult := &BenchmarkResult{
+		ID:        runID,
+		Timestamp: time.Now(),
+		Mode:      *mode,
+		Drives:    selectedDrives,
+		Phases:    make([]PhaseResult, 0),
+		OutputDir: outDir,
+	}
+	globalResultsStore.AddResult(liveResult)
+	coordinator.liveResult = liveResult
+
 	// Start web server in background
 	srv := newWebServer("0.0.0.0:12345")
 	go func() {
@@ -516,65 +529,21 @@ func displayDryRun(coordinator *ExecutionCoordinator) error {
 
 // saveBenchmarkSummary saves a summary of the benchmark run to the output directory.
 func saveBenchmarkSummary(coordinator *ExecutionCoordinator, drives []DriveInfo, mode, outDir string) error {
-	// Generate a unique ID for this run (timestamp-based)
-	runID := fmt.Sprintf("run_%d", time.Now().Unix())
-
-	// Collect all phase results
-	var phases []PhaseResult
-	maxPhases := 0
-	for _, workload := range coordinator.workloads {
-		if len(workload.Phases) > maxPhases {
-			maxPhases = len(workload.Phases)
+	// Reuse liveResult (already populated incrementally during execution).
+	summary := coordinator.liveResult
+	if summary == nil {
+		summary = &BenchmarkResult{
+			ID:        fmt.Sprintf("run_%d", time.Now().Unix()),
+			Timestamp: time.Now(),
+			Mode:      mode,
+			Drives:    drives,
+			Phases:    make([]PhaseResult, 0),
+			OutputDir: outDir,
 		}
-	}
-
-	for phaseIdx := 0; phaseIdx < maxPhases; phaseIdx++ {
-		phaseResult := PhaseResult{
-			PhaseNumber: phaseIdx + 1,
-			FioFiles:    make(map[string]string),
-		}
-
-		// Collect output files for this phase from all drives
-		for _, drive := range drives {
-			deviceName := drive.Device.Name
-			workload := coordinator.workloads[deviceName]
-
-			if phaseIdx < len(workload.Phases) {
-				phase := workload.Phases[phaseIdx]
-				if len(phase) > 0 {
-					// Find the output file for this phase
-					pattern := filepath.Join(outDir, fmt.Sprintf("%s_phase%d_*.json", deviceName, phaseIdx))
-					files, err := filepath.Glob(pattern)
-					if err == nil && len(files) > 0 {
-						// Use the most recent file (in case of multiple)
-						phaseResult.FioFiles[deviceName] = files[len(files)-1]
-					}
-
-					// Set phase name from first job if available
-					if phaseResult.PhaseName == "" && len(phase) > 0 {
-						phaseResult.PhaseName = phase[0].Name
-					}
-				}
-			}
-		}
-
-		if len(phaseResult.FioFiles) > 0 {
-			phases = append(phases, phaseResult)
-		}
-	}
-
-	// Create benchmark result summary
-	summary := BenchmarkResult{
-		ID:        runID,
-		Timestamp: time.Now(),
-		Mode:      mode,
-		Drives:    drives,
-		Phases:    phases,
-		OutputDir: outDir,
 	}
 
 	// Save to JSON file
-	summaryPath := filepath.Join(outDir, fmt.Sprintf("%s_summary.json", runID))
+	summaryPath := filepath.Join(outDir, fmt.Sprintf("%s_summary.json", summary.ID))
 	data, err := json.MarshalIndent(summary, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal summary: %w", err)
@@ -587,8 +556,7 @@ func saveBenchmarkSummary(coordinator *ExecutionCoordinator, drives []DriveInfo,
 	logger.Info("saved benchmark summary", "path", summaryPath)
 	fmt.Printf("Saved benchmark summary: %s\n", summaryPath)
 
-	// Add to global results store for immediate viewing
-	globalResultsStore.AddResult(&summary)
+	globalResultsStore.AddResult(summary)
 
 	return nil
 }

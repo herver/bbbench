@@ -18,36 +18,14 @@ func handleBrowsePage(w http.ResponseWriter, r *http.Request) {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        * {
-            box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             margin: 0;
             padding: 0;
             background: #f5f5f5;
         }
-        .header {
-            background: #fff;
-            padding: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        .header h1 {
-            margin: 0;
-            color: #333;
-        }
-        .nav {
-            margin-top: 10px;
-        }
-        .nav a {
-            color: #2196f3;
-            text-decoration: none;
-            margin-right: 15px;
-            font-size: 14px;
-        }
-        .nav a:hover {
-            text-decoration: underline;
-        }
+        __NAVBAR_CSS__
         .container {
             max-width: 1400px;
             margin: 0 auto;
@@ -153,16 +131,9 @@ func handleBrowsePage(w http.ResponseWriter, r *http.Request) {
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>Browse Benchmark Results</h1>
-        <div class="nav">
-            <a href="/">Home</a>
-            <a href="/status">Status</a>
-            <a href="/results">Browse</a>
-        </div>
-    </div>
-
+__NAVBAR_HTML__
     <div class="container">
+        <h2 style="margin: 20px 0 16px; color: #333; font-size: 20px;">Browse Benchmark Results</h2>
         <div class="controls">
             <input type="text" id="search" placeholder="Search by ID, mode, or drive...">
             <select id="filter-mode">
@@ -223,6 +194,7 @@ func handleBrowsePage(w http.ResponseWriter, r *http.Request) {
                     '<td class="stats">' + result.phase_count + ' phase(s)</td>' +
                     '<td class="actions">' +
                         '<a href="/result?id=' + result.id + '">Details</a>' +
+                        '<a href="/summary?id=' + result.id + '">Summary</a>' +
                         '<a href="/graphs?id=' + result.id + '">Graphs</a>' +
                     '</td>' +
                     '</tr>';
@@ -278,6 +250,8 @@ func handleBrowsePage(w http.ResponseWriter, r *http.Request) {
     </script>
 </body>
 </html>`
+	html = strings.ReplaceAll(html, "__NAVBAR_CSS__", navbarCSS)
+	html = strings.ReplaceAll(html, "__NAVBAR_HTML__", navbarHTML("/results"))
 
 	w.Write([]byte(html))
 }
@@ -305,30 +279,14 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+        * { box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             margin: 0;
             padding: 0;
             background: #f5f5f5;
         }
-        .header {
-            background: #fff;
-            padding: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        .header h1 {
-            margin: 0;
-            color: #333;
-        }
-        .nav {
-            margin-top: 10px;
-        }
-        .nav a {
-            color: #2196f3;
-            text-decoration: none;
-            margin-right: 15px;
-            font-size: 14px;
-        }
+        %s
         .container {
             max-width: 1400px;
             margin: 0 auto;
@@ -415,15 +373,7 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>Benchmark Result Details</h1>
-        <div class="nav">
-            <a href="/">Home</a>
-            <a href="/status">Status</a>
-            <a href="/results">Browse</a>
-        </div>
-    </div>
-
+%s
     <div class="container">
         <div class="card">
             <h2>Overview</h2>
@@ -447,7 +397,8 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
             </div>
 
             <div class="actions">
-                <a href="/graphs?id=%s" class="btn">View Graphs</a>
+                <a href="/summary?id=%s" class="btn">Summary</a>
+                <a href="/graphs?id=%s" class="btn">Graphs</a>
                 <a href="/export?id=%s" class="btn btn-secondary">Export HTML</a>
             </div>
         </div>
@@ -492,10 +443,13 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
     </script>
 </body>
 </html>`,
+		navbarCSS,
+		navbarHTML("/results"),
 		escapeHTML(result.ID),
 		result.Timestamp.Format("2006-01-02 15:04:05"),
 		escapeHTML(result.Mode),
 		len(result.Phases),
+		escapeHTML(result.ID),
 		escapeHTML(result.ID),
 		escapeHTML(result.ID),
 		escapeHTML(result.ID))

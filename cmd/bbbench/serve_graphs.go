@@ -4,280 +4,226 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
-// GraphData represents data for a single graph.
-type GraphData struct {
-	Title    string    `json:"title"`
-	Type     string    `json:"type"` // line, bar
-	Labels   []string  `json:"labels"`
-	Datasets []Dataset `json:"datasets"`
+// DiskPhaseData holds metrics for one disk × one phase combination.
+type DiskPhaseData struct {
+	Disk       string `json:"disk"` // OS name, e.g. "sdq"
+	Path       string `json:"path"` // full path, e.g. "/dev/sdq"
+	Vendor     string `json:"vendor"`
+	Model      string `json:"model"`
+	Serial     string `json:"serial"`
+	Technology string `json:"technology"` // "hdd" or "ssd"
+	PhaseNum   int    `json:"phase_num"`
+	PhaseName  string `json:"phase_name"`
+	// Summary stats (averages for the full phase)
+	ReadIOPS    float64 `json:"read_iops"`
+	WriteIOPS   float64 `json:"write_iops"`
+	ReadBWMbps  float64 `json:"read_bw_mbps"`
+	WriteBWMbps float64 `json:"write_bw_mbps"`
+	ReadLatUS   float64 `json:"read_lat_us"`
+	WriteLatUS  float64 `json:"write_lat_us"`
+	HasRead     bool    `json:"has_read"`
+	HasWrite    bool    `json:"has_write"`
+	// Time-series data from fio log files (nil for old results)
+	TSiops []TimePoint `json:"ts_iops,omitempty"`
+	TSbw   []TimePoint `json:"ts_bw,omitempty"`
+	TSlat  []TimePoint `json:"ts_lat,omitempty"`
 }
 
-// Dataset represents a single data series in a graph.
-type Dataset struct {
-	Label           string    `json:"label"`
-	Data            []float64 `json:"data"`
-	BackgroundColor string    `json:"backgroundColor,omitempty"`
-	BorderColor     string    `json:"borderColor,omitempty"`
-	Fill            bool      `json:"fill"`
+// DiskGraphData holds per-disk metrics across all phases (used by export).
+type DiskGraphData struct {
+	Disk   string         `json:"disk"`
+	Title  string         `json:"title"`
+	Phases []PhaseMetrics `json:"phases"`
 }
 
-// generateGraphsForResult creates graph data for a benchmark result.
-func generateGraphsForResult(result *BenchmarkResult) []GraphData {
-	var graphs []GraphData
+// PhaseMetrics holds aggregated I/O metrics for one phase of one disk.
+type PhaseMetrics struct {
+	PhaseName   string  `json:"phase_name"`
+	PhaseNum    int     `json:"phase_num"`
+	ReadIOPS    float64 `json:"read_iops"`
+	WriteIOPS   float64 `json:"write_iops"`
+	ReadBWMbps  float64 `json:"read_bw_mbps"`
+	WriteBWMbps float64 `json:"write_bw_mbps"`
+	ReadLatUS   float64 `json:"read_lat_us"`
+	WriteLatUS  float64 `json:"write_lat_us"`
+	HasRead     bool    `json:"has_read"`
+	HasWrite    bool    `json:"has_write"`
+}
 
-	if len(result.Phases) == 0 {
-		return graphs
+// generateDiskPhaseData returns a flat list of one entry per disk × phase.
+func generateDiskPhaseData(result *BenchmarkResult) []DiskPhaseData {
+	// Build ordered unique disk list and info lookup.
+	type diskInfo struct {
+		path, vendor, model, serial, technology string
+	}
+	seen := map[string]bool{}
+	diskOrder := []string{}
+	info := map[string]diskInfo{}
+	for _, drive := range result.Drives {
+		n := drive.Device.Name
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		diskOrder = append(diskOrder, n)
+		tech := "ssd"
+		if drive.Device.Rotational {
+			tech = "hdd"
+		}
+		info[n] = diskInfo{
+			path:       drive.Device.Path,
+			vendor:     strings.TrimSpace(drive.Device.Vendor),
+			model:      strings.TrimSpace(drive.Device.Model),
+			serial:     strings.TrimSpace(drive.Device.Serial),
+			technology: tech,
+		}
 	}
 
-	// Generate IOPS graph
-	if iopsGraph := generateIOPSGraph(result); iopsGraph != nil {
-		graphs = append(graphs, *iopsGraph)
+	var out []DiskPhaseData
+	for _, phase := range result.Phases {
+		// Aggregate jobs per device for this phase.
+		byDisk := map[string]*DiskPhaseData{}
+		for _, job := range phase.Jobs {
+			di, ok := info[job.Device]
+			if !ok {
+				continue
+			}
+			dp, exists := byDisk[job.Device]
+			if !exists {
+				dp = &DiskPhaseData{
+					Disk:       job.Device,
+					Path:       di.path,
+					Vendor:     di.vendor,
+					Model:      di.model,
+					Serial:     di.serial,
+					Technology: di.technology,
+					PhaseNum:   phase.PhaseNumber,
+					PhaseName:  phase.PhaseName,
+				}
+				byDisk[job.Device] = dp
+			}
+			if job.ReadStats != nil && job.ReadStats.IOPS > 0 {
+				dp.ReadIOPS += job.ReadStats.IOPS
+				dp.ReadBWMbps += job.ReadStats.Bandwidth / 1024
+				if job.ReadStats.AvgLatNS > 0 {
+					dp.ReadLatUS = job.ReadStats.AvgLatNS / 1000
+				}
+				dp.HasRead = true
+			}
+			if job.WriteStats != nil && job.WriteStats.IOPS > 0 {
+				dp.WriteIOPS += job.WriteStats.IOPS
+				dp.WriteBWMbps += job.WriteStats.Bandwidth / 1024
+				if job.WriteStats.AvgLatNS > 0 {
+					dp.WriteLatUS = job.WriteStats.AvgLatNS / 1000
+				}
+				dp.HasWrite = true
+			}
+		}
+		// Emit in disk order, attaching time-series if available.
+		for _, name := range diskOrder {
+			if dp, ok := byDisk[name]; ok {
+				if phase.LogSeries != nil {
+					if ts, ok2 := phase.LogSeries[name]; ok2 && ts != nil {
+						dp.TSiops = ts.IOPS
+						dp.TSbw = ts.BW
+						dp.TSlat = ts.Lat
+					}
+				}
+				out = append(out, *dp)
+			}
+		}
+	}
+	return out
+}
+
+// generateDiskGraphs returns per-disk data with phases on the X axis (used by export).
+func generateDiskGraphs(result *BenchmarkResult) []DiskGraphData {
+	seen := map[string]bool{}
+	diskOrder := []string{}
+	diskTitle := map[string]string{}
+	for _, drive := range result.Drives {
+		name := drive.Device.Name
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		diskOrder = append(diskOrder, name)
+		title := name
+		v := strings.TrimSpace(drive.Device.Vendor)
+		m := strings.TrimSpace(drive.Device.Model)
+		if v != "" || m != "" {
+			title = fmt.Sprintf("%s  ·  %s %s", name, v, m)
+		}
+		diskTitle[name] = title
 	}
 
-	// Generate bandwidth graph
-	if bwGraph := generateBandwidthGraph(result); bwGraph != nil {
-		graphs = append(graphs, *bwGraph)
+	graphs := make([]DiskGraphData, 0, len(diskOrder))
+	for _, diskName := range diskOrder {
+		phases := make([]PhaseMetrics, 0, len(result.Phases))
+		for _, phase := range result.Phases {
+			pm := PhaseMetrics{PhaseName: phase.PhaseName, PhaseNum: phase.PhaseNumber}
+			for _, job := range phase.Jobs {
+				if job.Device != diskName {
+					continue
+				}
+				if job.ReadStats != nil && job.ReadStats.IOPS > 0 {
+					pm.ReadIOPS += job.ReadStats.IOPS
+					pm.ReadBWMbps += job.ReadStats.Bandwidth / 1024
+					if job.ReadStats.AvgLatNS > 0 {
+						pm.ReadLatUS = job.ReadStats.AvgLatNS / 1000
+					}
+					pm.HasRead = true
+				}
+				if job.WriteStats != nil && job.WriteStats.IOPS > 0 {
+					pm.WriteIOPS += job.WriteStats.IOPS
+					pm.WriteBWMbps += job.WriteStats.Bandwidth / 1024
+					if job.WriteStats.AvgLatNS > 0 {
+						pm.WriteLatUS = job.WriteStats.AvgLatNS / 1000
+					}
+					pm.HasWrite = true
+				}
+			}
+			phases = append(phases, pm)
+		}
+		if len(phases) > 0 {
+			graphs = append(graphs, DiskGraphData{
+				Disk:   diskName,
+				Title:  diskTitle[diskName],
+				Phases: phases,
+			})
+		}
 	}
-
-	// Generate latency graph
-	if latGraph := generateLatencyGraph(result); latGraph != nil {
-		graphs = append(graphs, *latGraph)
-	}
-
 	return graphs
 }
 
-// generateIOPSGraph creates an IOPS graph from benchmark results.
-func generateIOPSGraph(result *BenchmarkResult) *GraphData {
-	labels := make([]string, 0, len(result.Phases))
-	readData := make([]float64, 0, len(result.Phases))
-	writeData := make([]float64, 0, len(result.Phases))
-	trimData := make([]float64, 0, len(result.Phases))
-
-	hasRead := false
-	hasWrite := false
-	hasTrim := false
-
-	for _, phase := range result.Phases {
-		labels = append(labels, phase.PhaseName)
-
-		// Aggregate IOPS for all jobs in phase
-		var phaseReadIOPS, phaseWriteIOPS, phaseTrimIOPS float64
-		for _, job := range phase.Jobs {
-			if job.ReadStats != nil {
-				phaseReadIOPS += job.ReadStats.IOPS
-				hasRead = true
-			}
-			if job.WriteStats != nil {
-				phaseWriteIOPS += job.WriteStats.IOPS
-				hasWrite = true
-			}
-			if job.TrimStats != nil {
-				phaseTrimIOPS += job.TrimStats.IOPS
-				hasTrim = true
-			}
-		}
-
-		readData = append(readData, phaseReadIOPS)
-		writeData = append(writeData, phaseWriteIOPS)
-		trimData = append(trimData, phaseTrimIOPS)
-	}
-
-	datasets := []Dataset{}
-	if hasRead {
-		datasets = append(datasets, Dataset{
-			Label:       "Read IOPS",
-			Data:        readData,
-			BorderColor: "rgb(75, 192, 192)",
-			Fill:        false,
-		})
-	}
-	if hasWrite {
-		datasets = append(datasets, Dataset{
-			Label:       "Write IOPS",
-			Data:        writeData,
-			BorderColor: "rgb(255, 99, 132)",
-			Fill:        false,
-		})
-	}
-	if hasTrim {
-		datasets = append(datasets, Dataset{
-			Label:       "Trim IOPS",
-			Data:        trimData,
-			BorderColor: "rgb(255, 205, 86)",
-			Fill:        false,
-		})
-	}
-
-	if len(datasets) == 0 {
-		return nil
-	}
-
-	return &GraphData{
-		Title:    "IOPS (I/O Operations Per Second)",
-		Type:     "line",
-		Labels:   labels,
-		Datasets: datasets,
-	}
-}
-
-// generateBandwidthGraph creates a bandwidth graph from benchmark results.
-func generateBandwidthGraph(result *BenchmarkResult) *GraphData {
-	labels := make([]string, 0, len(result.Phases))
-	readData := make([]float64, 0, len(result.Phases))
-	writeData := make([]float64, 0, len(result.Phases))
-
-	hasRead := false
-	hasWrite := false
-
-	for _, phase := range result.Phases {
-		labels = append(labels, phase.PhaseName)
-
-		// Aggregate bandwidth for all jobs in phase (convert KB/s to MB/s)
-		var phaseReadBW, phaseWriteBW float64
-		for _, job := range phase.Jobs {
-			if job.ReadStats != nil {
-				phaseReadBW += job.ReadStats.Bandwidth / 1024 // KB/s to MB/s
-				hasRead = true
-			}
-			if job.WriteStats != nil {
-				phaseWriteBW += job.WriteStats.Bandwidth / 1024
-				hasWrite = true
-			}
-		}
-
-		readData = append(readData, phaseReadBW)
-		writeData = append(writeData, phaseWriteBW)
-	}
-
-	datasets := []Dataset{}
-	if hasRead {
-		datasets = append(datasets, Dataset{
-			Label:       "Read Bandwidth (MB/s)",
-			Data:        readData,
-			BorderColor: "rgb(54, 162, 235)",
-			Fill:        false,
-		})
-	}
-	if hasWrite {
-		datasets = append(datasets, Dataset{
-			Label:       "Write Bandwidth (MB/s)",
-			Data:        writeData,
-			BorderColor: "rgb(255, 159, 64)",
-			Fill:        false,
-		})
-	}
-
-	if len(datasets) == 0 {
-		return nil
-	}
-
-	return &GraphData{
-		Title:    "Bandwidth (MB/s)",
-		Type:     "line",
-		Labels:   labels,
-		Datasets: datasets,
-	}
-}
-
-// generateLatencyGraph creates a latency graph from benchmark results.
-func generateLatencyGraph(result *BenchmarkResult) *GraphData {
-	labels := make([]string, 0, len(result.Phases))
-	avgData := make([]float64, 0, len(result.Phases))
-	p95Data := make([]float64, 0, len(result.Phases))
-	p99Data := make([]float64, 0, len(result.Phases))
-
-	hasLatency := false
-
-	for _, phase := range result.Phases {
-		labels = append(labels, phase.PhaseName)
-
-		// Use first job with latency stats (convert ns to μs)
-		var avgLat, p95Lat, p99Lat float64
-		for _, job := range phase.Jobs {
-			if job.Latency != nil {
-				avgLat = job.Latency.Mean / 1000 // ns to μs
-				p95Lat = job.Latency.P95 / 1000
-				p99Lat = job.Latency.P99 / 1000
-				hasLatency = true
-				break
-			}
-		}
-
-		avgData = append(avgData, avgLat)
-		p95Data = append(p95Data, p95Lat)
-		p99Data = append(p99Data, p99Lat)
-	}
-
-	if !hasLatency {
-		return nil
-	}
-
-	datasets := []Dataset{
-		{
-			Label:       "Average Latency (μs)",
-			Data:        avgData,
-			BorderColor: "rgb(153, 102, 255)",
-			Fill:        false,
-		},
-		{
-			Label:       "P95 Latency (μs)",
-			Data:        p95Data,
-			BorderColor: "rgb(255, 159, 64)",
-			Fill:        false,
-		},
-		{
-			Label:       "P99 Latency (μs)",
-			Data:        p99Data,
-			BorderColor: "rgb(255, 99, 132)",
-			Fill:        false,
-		},
-	}
-
-	return &GraphData{
-		Title:    "Latency (microseconds)",
-		Type:     "line",
-		Labels:   labels,
-		Datasets: datasets,
-	}
-}
-
-// handleResultGraphs serves graph data for a specific result.
+// handleResultGraphs serves the flat disk×phase data as JSON.
 func handleResultGraphs(w http.ResponseWriter, r *http.Request) {
-	// Extract result ID from query parameter
 	resultID := r.URL.Query().Get("id")
 	if resultID == "" {
 		http.Error(w, "Missing result ID", http.StatusBadRequest)
 		return
 	}
-
-	// Get result from store
 	result, ok := globalResultsStore.GetResult(resultID)
 	if !ok {
 		http.Error(w, "Result not found", http.StatusNotFound)
 		return
 	}
-
-	// Generate graphs
-	graphs := generateGraphsForResult(result)
-
+	data := generateDiskPhaseData(result)
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(graphs); err != nil {
+	if err := json.NewEncoder(w).Encode(data); err != nil {
 		if logger != nil {
 			logger.Error("encode graphs", "err", err)
 		}
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
 	}
 }
 
 // handleResultsList serves a list of all benchmark results.
 func handleResultsList(w http.ResponseWriter, r *http.Request) {
 	results := globalResultsStore.ListResults()
-
-	// Create summary list (don't include full phase data)
 	summaries := make([]map[string]interface{}, len(results))
 	for i, result := range results {
 		summaries[i] = map[string]interface{}{
@@ -289,15 +235,28 @@ func handleResultsList(w http.ResponseWriter, r *http.Request) {
 			"output_dir":  result.OutputDir,
 		}
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(summaries); err != nil {
 		if logger != nil {
 			logger.Error("encode results list", "err", err)
 		}
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
 	}
+}
+
+// filterGroup returns the HTML for one sidebar filter group.
+func filterGroup(dim, label string) string {
+	return fmt.Sprintf(`
+        <div class="fg">
+            <div class="fg-hdr">
+                <span class="fg-title">%s</span>
+                <span class="fg-allnone">
+                    <a href="#" onclick="setAll('%s',true);return false">All</a>
+                    <a href="#" onclick="setAll('%s',false);return false">None</a>
+                </span>
+            </div>
+            <ul class="flist" id="list-%s"></ul>
+        </div>`, label, dim, dim, dim)
 }
 
 // handleGraphsPage serves the graphs visualization page.
@@ -307,8 +266,6 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Missing result ID", http.StatusBadRequest)
 		return
 	}
-
-	// Verify result exists
 	_, ok := globalResultsStore.GetResult(resultID)
 	if !ok {
 		http.Error(w, "Result not found", http.StatusNotFound)
@@ -317,7 +274,15 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	html := fmt.Sprintf(`<!DOCTYPE html>
+	sidebar := filterGroup("graph_type", "Graph Type") +
+		filterGroup("technology", "Drive Type") +
+		filterGroup("vendor", "Vendor") +
+		filterGroup("model", "Model") +
+		filterGroup("serial", "Serial") +
+		filterGroup("disk", "Device") +
+		filterGroup("phase", "Phase")
+
+	html := `<!DOCTYPE html>
 <html>
 <head>
     <title>bbbench - Benchmark Graphs</title>
@@ -325,125 +290,464 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
-            background: #f5f5f5;
+            display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+            background: #f1f5f9;
         }
-        .header {
-            background: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        __NAVBAR_CSS__
+        .workspace { display: flex; flex: 1; overflow: hidden; }
+
+        /* ── Sidebar ── */
+        .sidebar {
+            width: 240px; flex-shrink: 0;
+            background: #fff; border-right: 1px solid #e2e8f0;
+            overflow-y: auto; padding: 12px 12px 0;
+            display: flex; flex-direction: column; gap: 0;
         }
-        h1 {
-            margin: 0;
-            color: #333;
+        .fg { border-bottom: 1px solid #f1f5f9; padding: 10px 0 8px; }
+        .fg-hdr {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 5px;
         }
-        .nav {
-            margin-top: 10px;
+        .fg-title {
+            font-size: 10px; font-weight: 700; color: #64748b;
+            text-transform: uppercase; letter-spacing: 0.08em;
         }
-        .nav a {
-            color: #2196f3;
-            text-decoration: none;
-            margin-right: 15px;
+        .fg-allnone { display: flex; gap: 6px; }
+        .fg-allnone a { font-size: 11px; color: #2563eb; text-decoration: none; }
+        .fg-allnone a:hover { text-decoration: underline; }
+        .flist { list-style: none; }
+        .flist li label {
+            display: flex; align-items: flex-start; gap: 5px;
+            font-size: 11px; color: #334155; cursor: pointer;
+            padding: 2px 0; line-height: 1.4; word-break: break-all;
         }
-        .graph-container {
-            background: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        .flist li label input[type=checkbox] { flex-shrink: 0; margin-top: 2px; accent-color: #2563eb; }
+        .sidebar-bottom {
+            padding: 12px 0; display: flex; flex-direction: column; gap: 8px;
+            position: sticky; bottom: 0; background: #fff;
+            border-top: 1px solid #e2e8f0;
         }
-        .graph-title {
-            font-size: 18px;
-            font-weight: 600;
-            margin-bottom: 15px;
-            color: #333;
+        .count { font-size: 11px; color: #64748b; }
+        .btn-show {
+            width: 100%; padding: 8px; background: #2563eb; color: #fff;
+            border: none; border-radius: 6px; font-size: 13px; font-weight: 600;
+            cursor: pointer; transition: background 0.15s;
         }
-        canvas {
-            max-height: 400px;
+        .btn-show:hover { background: #1d4ed8; }
+
+        /* ── Main ── */
+        .main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+
+        /* Metric-level foldable section */
+        .metric-section { display: flex; flex-direction: column; }
+        .sec-hdr {
+            display: flex; align-items: center; gap: 8px;
+            cursor: pointer; user-select: none;
+            font-size: 14px; font-weight: 700; color: #1e293b;
+            padding: 10px 14px; border-bottom: 2px solid #e2e8f0;
+            background: #fff; border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+        }
+        .sec-hdr:hover { background: #f8fafc; }
+        .sec-hdr .chev { display: inline-block; font-size: 10px; color: #94a3b8; transition: transform 0.18s; }
+        .sec-hdr.collapsed .chev { transform: rotate(-90deg); }
+        .sec-body { padding: 8px 0 4px; display: flex; flex-direction: column; gap: 0; }
+        .sec-body.hidden { display: none; }
+
+        /* Phase-level foldable sub-section */
+        .phase-hdr {
+            display: flex; align-items: center; gap: 7px;
+            cursor: pointer; user-select: none;
+            font-size: 12px; font-weight: 700; color: #475569;
+            padding: 7px 12px; margin: 8px 0 6px;
+            background: #f1f5f9; border-left: 3px solid #2563eb;
+            border-radius: 0 5px 5px 0;
+        }
+        .phase-hdr:hover { background: #e2e8f0; }
+        .phase-hdr .chev { display: inline-block; font-size: 9px; color: #94a3b8; transition: transform 0.18s; }
+        .phase-hdr.collapsed .chev { transform: rotate(-90deg); }
+        .phase-count { font-weight: 400; color: #94a3b8; font-size: 11px; }
+        .phase-body { padding-bottom: 8px; }
+        .phase-body.hidden { display: none; }
+
+        .chart-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 12px;
+        }
+        .chart-card {
+            background: #fff; border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            padding: 10px 12px 8px; display: flex; flex-direction: column;
+        }
+        .card-title {
+            font-size: 12px; font-weight: 700; color: #1e293b;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .card-subtitle {
+            font-size: 10px; color: #64748b; margin-top: 2px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .chart-wrap { position: relative; height: 160px; margin-top: 6px; }
+        .placeholder {
+            display: flex; align-items: center; justify-content: center;
+            flex: 1; color: #94a3b8; font-size: 14px; padding: 60px;
+            text-align: center;
         }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>Benchmark Graphs</h1>
-        <div class="nav">
-            <a href="/">Home</a>
-            <a href="/status">Status</a>
-            <a href="/results">Results</a>
+__NAVBAR_HTML__
+<div class="workspace">
+    <aside class="sidebar">
+        __SIDEBAR__
+        <div class="sidebar-bottom">
+            <div class="count" id="count"></div>
+            <button class="btn-show" id="btn-show">Show Graphs</button>
         </div>
-    </div>
+    </aside>
+    <main class="main" id="main">
+        <div class="placeholder">Select filters and click "Show Graphs".</div>
+    </main>
+</div>
 
-    <div id="graphs-container">
-        <p>Loading graphs...</p>
-    </div>
+<script>
+    const resultID = '__RESULT_ID__';
+    let allData = [];
+    const charts = {};
 
-    <script>
-        const resultID = '%s';
+    const METRICS = [
+        { key: 'iops', label: 'IOPS',           unit: 'IOPS',  tsKey: 'ts_iops',
+          sumR: d => d.read_iops||0,    sumW: d => d.write_iops||0    },
+        { key: 'bw',   label: 'Bandwidth MB/s', unit: 'MB/s',  tsKey: 'ts_bw',
+          sumR: d => d.read_bw_mbps||0, sumW: d => d.write_bw_mbps||0 },
+        { key: 'lat',  label: 'Latency \u03bcs', unit: '\u03bcs', tsKey: 'ts_lat',
+          sumR: d => d.read_lat_us||0,  sumW: d => d.write_lat_us||0  },
+    ];
 
-        fetch('/api/results/graphs?id=' + resultID)
-            .then(response => response.json())
-            .then(graphs => {
-                const container = document.getElementById('graphs-container');
-                container.innerHTML = '';
+    // Selections: Set of checked values per dimension.
+    const SEL = {
+        graph_type: new Set(),
+        technology: new Set(),
+        vendor:     new Set(),
+        model:      new Set(),
+        serial:     new Set(),
+        disk:       new Set(),
+        phase:      new Set(),
+    };
 
-                if (graphs.length === 0) {
-                    container.innerHTML = '<p>No graph data available</p>';
-                    return;
-                }
+    // Data dimensions and their field accessors.
+    const DATA_DIMS = ['technology', 'vendor', 'model', 'serial', 'disk', 'phase'];
+    const DIM_F = {
+        technology: d => d.technology || '',
+        vendor:     d => d.vendor     || '',
+        model:      d => d.model      || '',
+        serial:     d => d.serial     || '',
+        disk:       d => d.disk       || '',
+        phase:      d => d.phase_name || '',
+    };
 
-                graphs.forEach((graphData, index) => {
-                    const div = document.createElement('div');
-                    div.className = 'graph-container';
+    // Entries matching all dims except the given one.
+    function dataExcept(dim) {
+        return allData.filter(d =>
+            DATA_DIMS.every(fd => fd === dim || SEL[fd].has(DIM_F[fd](d)))
+        );
+    }
 
-                    const title = document.createElement('div');
-                    title.className = 'graph-title';
-                    title.textContent = graphData.title;
-                    div.appendChild(title);
+    // Sorted unique values for dim that appear in dataExcept(dim).
+    function availableFor(dim) {
+        const seen = new Set();
+        dataExcept(dim).forEach(d => seen.add(DIM_F[dim](d)));
+        return [...seen].sort();
+    }
 
-                    const canvas = document.createElement('canvas');
-                    canvas.id = 'chart-' + index;
-                    div.appendChild(canvas);
-
-                    container.appendChild(div);
-
-                    // Create chart
-                    new Chart(canvas, {
-                        type: graphData.type,
-                        data: {
-                            labels: graphData.labels,
-                            datasets: graphData.datasets
-                        },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: true,
-                            plugins: {
-                                legend: {
-                                    position: 'top',
-                                },
-                            },
-                            scales: {
-                                y: {
-                                    beginAtZero: true
-                                }
-                            }
-                        }
-                    });
-                });
-            })
-            .catch(error => {
-                console.error('Error loading graphs:', error);
-                document.getElementById('graphs-container').innerHTML =
-                    '<p>Error loading graphs: ' + error.message + '</p>';
+    // Build or rebuild one filter list.
+    function buildList(dim, values, isStatic) {
+        const ul = document.getElementById('list-' + dim);
+        ul.innerHTML = '';
+        values.forEach(v => {
+            const li  = document.createElement('li');
+            const lbl = document.createElement('label');
+            const cb  = document.createElement('input');
+            cb.type    = 'checkbox';
+            cb.value   = v;
+            cb.checked = SEL[dim].has(v);
+            cb.addEventListener('change', () => {
+                if (cb.checked) SEL[dim].add(v); else SEL[dim].delete(v);
+                if (isStatic) { updateCount(); } else { updateLists(); }
             });
-    </script>
+            lbl.appendChild(cb);
+            lbl.appendChild(document.createTextNode('\u00a0' + (v || '(unknown)')));
+            li.appendChild(lbl);
+            ul.appendChild(li);
+        });
+    }
+
+    function updateLists() {
+        DATA_DIMS.forEach(dim => buildList(dim, availableFor(dim), false));
+        updateCount();
+    }
+
+    function updateCount() {
+        const n = filteredData().length;
+        document.getElementById('count').textContent =
+            n + ' combination' + (n !== 1 ? 's' : '') + ' match';
+    }
+
+    // Check/uncheck all visible items in a list.
+    function setAll(dim, checked) {
+        const ul = document.getElementById('list-' + dim);
+        ul.querySelectorAll('input[type=checkbox]').forEach(cb => {
+            cb.checked = checked;
+            if (checked) SEL[dim].add(cb.value); else SEL[dim].delete(cb.value);
+        });
+        if (dim === 'graph_type') updateCount(); else updateLists();
+    }
+
+    function filteredData() {
+        return allData.filter(d =>
+            DATA_DIMS.every(fd => SEL[fd].has(DIM_F[fd](d)))
+        );
+    }
+
+    function initFilters() {
+        // graph_type: static list
+        const GT = [['iops','IOPS'],['bw','Bandwidth (MB/s)'],['lat','Latency (\u03bcs)']];
+        const ul = document.getElementById('list-graph_type');
+        GT.forEach(([v, label]) => {
+            SEL.graph_type.add(v);
+            const li = document.createElement('li');
+            const lbl = document.createElement('label');
+            const cb = document.createElement('input');
+            cb.type = 'checkbox'; cb.value = v; cb.checked = true;
+            cb.addEventListener('change', () => {
+                if (cb.checked) SEL.graph_type.add(v); else SEL.graph_type.delete(v);
+                updateCount();
+            });
+            lbl.appendChild(cb);
+            lbl.appendChild(document.createTextNode('\u00a0' + label));
+            li.appendChild(lbl);
+            ul.appendChild(li);
+        });
+        // Data dims: all values selected by default
+        DATA_DIMS.forEach(dim => {
+            const vals = [...new Set(allData.map(d => DIM_F[dim](d)))].sort();
+            vals.forEach(v => SEL[dim].add(v));
+            buildList(dim, vals, false);
+        });
+        updateCount();
+    }
+
+    // ── Chart rendering ──
+
+    function fmtTick(v) {
+        const a = Math.abs(v);
+        if (a === 0) return '0';
+        return a >= 1000 ? (a/1000).toFixed(1)+'k' : a.toFixed(0);
+    }
+
+    function destroyAllCharts() {
+        Object.keys(charts).forEach(id => { charts[id].destroy(); delete charts[id]; });
+    }
+
+    function toggleSection(hdr, body) {
+        const collapsed = body.classList.toggle('hidden');
+        hdr.classList.toggle('collapsed', collapsed);
+    }
+
+    function makeChartCard(d, metric, cid, yLow, yHigh) {
+        const card = document.createElement('div');
+        card.className = 'chart-card';
+
+        const t1 = document.createElement('div');
+        t1.className = 'card-title';
+        t1.textContent = d.disk;
+        card.appendChild(t1);
+
+        const t2 = document.createElement('div');
+        t2.className = 'card-subtitle';
+        const tech = d.technology ? d.technology.toUpperCase() : '';
+        t2.textContent = [d.vendor, d.model, d.serial, tech].filter(Boolean).join('  \u00b7  ');
+        card.appendChild(t2);
+
+        const wrap = document.createElement('div');
+        wrap.className = 'chart-wrap';
+        const canvas = document.createElement('canvas');
+        wrap.appendChild(canvas);
+        card.appendChild(wrap);
+
+        const ts = d[metric.tsKey];
+        if (ts && ts.length > 0) {
+            const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t), y:  p.r}));
+            const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t), y: -p.w}));
+            const datasets = [];
+            if (readPts.length > 0) datasets.push({
+                label: 'Read',  data: readPts,
+                borderColor: 'rgba(37,99,235,0.9)',  backgroundColor: 'rgba(37,99,235,0.07)',
+                fill: 'origin', tension: 0.2, pointRadius: 2, borderWidth: 1.5,
+            });
+            if (writePts.length > 0) datasets.push({
+                label: 'Write', data: writePts,
+                borderColor: 'rgba(220,38,38,0.9)', backgroundColor: 'rgba(220,38,38,0.07)',
+                fill: 'origin', tension: 0.2, pointRadius: 2, borderWidth: 1.5,
+            });
+            charts[cid] = new Chart(canvas, {
+                type: 'line', data: { datasets },
+                options: {
+                    responsive: true, maintainAspectRatio: false, animation: false,
+                    plugins: {
+                        legend: { display: true, position: 'top',
+                            labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
+                        tooltip: { callbacks: {
+                            label: ctx => (ctx.raw.y >= 0 ? 'Read: ' : 'Write: ') +
+                                          fmtTick(ctx.raw.y) + ' ' + metric.unit
+                        }}
+                    },
+                    scales: {
+                        x: { type: 'linear',
+                             title: { display: true, text: 'seconds', color: '#94a3b8', font: {size: 9} },
+                             ticks: { font: {size: 9}, color: '#64748b', maxTicksLimit: 6 } },
+                        y: { min: yLow, max: yHigh,
+                             ticks: { callback: fmtTick, font: {size: 9}, color: '#64748b' },
+                             grid: { color: ctx => ctx.tick.value === 0 ? '#94a3b8' : '#f1f5f9' } }
+                    }
+                }
+            });
+        } else {
+            const r = metric.sumR(d), w = metric.sumW(d);
+            const lbls = [], vals = [], cols = [];
+            if (r > 0) { lbls.push('Read');  vals.push(r);  cols.push('rgba(37,99,235,0.75)'); }
+            if (w > 0) { lbls.push('Write'); vals.push(-w); cols.push('rgba(220,38,38,0.75)'); }
+            if (!lbls.length) { lbls.push('\u2014'); vals.push(0); cols.push('#e2e8f0'); }
+            charts[cid] = new Chart(canvas, {
+                type: 'bar',
+                data: { labels: lbls, datasets: [{ data: vals, backgroundColor: cols, borderWidth: 1 }] },
+                options: {
+                    responsive: true, maintainAspectRatio: false, animation: false,
+                    plugins: { legend: { display: false },
+                        tooltip: { callbacks: { label: ctx =>
+                            fmtTick(Math.abs(ctx.raw)) + ' ' + metric.unit } }
+                    },
+                    scales: { y: { min: yLow, max: yHigh,
+                        ticks: { callback: fmtTick, font: {size: 9} } } }
+                }
+            });
+        }
+        return card;
+    }
+
+    function renderAll() {
+        destroyAllCharts();
+        const main = document.getElementById('main');
+        main.innerHTML = '';
+
+        const data = filteredData();
+        const selMetrics = METRICS.filter(m => SEL.graph_type.has(m.key));
+
+        if (selMetrics.length === 0) {
+            main.innerHTML = '<div class="placeholder">Select at least one graph type.</div>';
+            return;
+        }
+        if (data.length === 0) {
+            main.innerHTML = '<div class="placeholder">No data matches the current filters.</div>';
+            return;
+        }
+
+        selMetrics.forEach(metric => {
+            // Compute shared Y scale across all data for this metric.
+            let yMax = 0, yMin = 0;
+            data.forEach(d => {
+                const ts = d[metric.tsKey];
+                if (ts && ts.length > 0) {
+                    ts.forEach(p => {
+                        if (p.r > yMax) yMax = p.r;
+                        if (p.w > 0 && -p.w < yMin) yMin = -p.w;
+                    });
+                } else {
+                    const r = metric.sumR(d), w = metric.sumW(d);
+                    if (r > yMax) yMax = r;
+                    if (w > 0 && -w < yMin) yMin = -w;
+                }
+            });
+            const yHigh = yMax * 1.15 || 1;
+            const yLow  = yMin < 0 ? yMin * 1.15 : 0;
+
+            // ── Metric-level foldable section ──
+            const section = document.createElement('div');
+            section.className = 'metric-section';
+
+            const secHdr = document.createElement('div');
+            secHdr.className = 'sec-hdr';
+            secHdr.innerHTML = '<span class="chev">▼</span>' + metric.label;
+            section.appendChild(secHdr);
+
+            const secBody = document.createElement('div');
+            secBody.className = 'sec-body';
+            section.appendChild(secBody);
+            main.appendChild(section);
+
+            secHdr.addEventListener('click', () => toggleSection(secHdr, secBody));
+
+            // Group data by phase, preserving encounter order.
+            const phaseOrder = [];
+            const byPhase = {};
+            data.forEach(d => {
+                const pname = d.phase_name || ('Phase ' + d.phase_num);
+                if (!byPhase[pname]) { phaseOrder.push(pname); byPhase[pname] = []; }
+                byPhase[pname].push(d);
+            });
+
+            // ── Phase-level foldable sub-section ──
+            phaseOrder.forEach(pname => {
+                const phaseData = byPhase[pname];
+                const diskCount = phaseData.length;
+
+                const phaseHdr = document.createElement('div');
+                phaseHdr.className = 'phase-hdr';
+                phaseHdr.innerHTML = '<span class="chev">▼</span>'
+                    + pname
+                    + ' <span class="phase-count">(' + diskCount + ' disk' + (diskCount !== 1 ? 's' : '') + ')</span>';
+                secBody.appendChild(phaseHdr);
+
+                const phaseBody = document.createElement('div');
+                phaseBody.className = 'phase-body';
+                secBody.appendChild(phaseBody);
+
+                phaseHdr.addEventListener('click', () => toggleSection(phaseHdr, phaseBody));
+
+                const grid = document.createElement('div');
+                grid.className = 'chart-grid';
+                phaseBody.appendChild(grid);
+
+                phaseData.forEach((d, i) => {
+                    const cid = metric.key + ':' + pname + ':' + i;
+                    const card = makeChartCard(d, metric, cid, yLow, yHigh);
+                    grid.appendChild(card);
+                });
+            });
+        });
+    }
+
+    document.getElementById('btn-show').addEventListener('click', renderAll);
+
+    fetch('/api/results/graphs?id=' + resultID)
+        .then(r => r.json())
+        .then(data => { allData = data || []; initFilters(); })
+        .catch(err => {
+            document.getElementById('main').innerHTML =
+                '<div class="placeholder">Error loading data: ' + err.message + '</div>';
+        });
+</script>
 </body>
-</html>`, resultID)
+</html>`
+
+	html = strings.ReplaceAll(html, "__NAVBAR_CSS__", navbarCSS)
+	html = strings.ReplaceAll(html, "__NAVBAR_HTML__", navbarHTML("/results"))
+	html = strings.ReplaceAll(html, "__RESULT_ID__", resultID)
+	html = strings.ReplaceAll(html, "__SIDEBAR__", sidebar)
 
 	w.Write([]byte(html))
 }

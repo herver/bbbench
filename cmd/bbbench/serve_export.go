@@ -22,7 +22,7 @@ func handleExportHTML(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate graphs data
-	graphs := generateGraphsForResult(result)
+	graphs := generateDiskGraphs(result)
 	graphsJSON, err := json.Marshal(graphs)
 	if err != nil {
 		if logger != nil {
@@ -252,42 +252,65 @@ func generateExportHTML(result *BenchmarkResult, graphsJSON string) string {
 
         if (graphsData && graphsData.length > 0) {
             const container = document.getElementById('graphs-container');
+            const metrics = [
+                { key: 'iops', label: 'IOPS', readFn: p => p.read_iops, writeFn: p => p.write_iops },
+                { key: 'bw',   label: 'Bandwidth (MB/s)', readFn: p => p.read_bw_mbps, writeFn: p => p.write_bw_mbps },
+            ];
 
-            graphsData.forEach((graphData, index) => {
-                const div = document.createElement('div');
-                div.className = 'graph-container';
+            metrics.forEach(metric => {
+                // Compute shared Y scale across all disks for this metric
+                let yMax = 0, yMin = 0;
+                graphsData.forEach(disk => {
+                    disk.phases.forEach(p => {
+                        const r = metric.readFn(p)  || 0;
+                        const w = metric.writeFn(p) || 0;
+                        if (r > yMax) yMax = r;
+                        if (-w < yMin) yMin = -w;
+                    });
+                });
 
-                const title = document.createElement('div');
-                title.className = 'graph-title';
-                title.textContent = graphData.title;
-                div.appendChild(title);
+                const section = document.createElement('div');
+                section.className = 'graph-container';
+                section.innerHTML = '<div class="graph-title">' + metric.label + ' — Read (positive) / Write (negative)</div>';
+                container.appendChild(section);
 
-                const canvas = document.createElement('canvas');
-                canvas.id = 'chart-' + index;
-                div.appendChild(canvas);
+                graphsData.forEach((disk, idx) => {
+                    const labels = disk.phases.map(p => p.phase_name || ('Phase ' + p.phase_num));
+                    const readData  = disk.phases.map(p =>  (metric.readFn(p)  || 0));
+                    const writeData = disk.phases.map(p => -(metric.writeFn(p) || 0));
 
-                container.appendChild(div);
+                    const wrap = document.createElement('div');
+                    wrap.style.cssText = 'background:#fff;border-radius:6px;padding:12px 16px;margin-bottom:12px;border:1px solid #e0e0e0';
+                    wrap.innerHTML = '<div style="font-size:13px;font-weight:600;margin-bottom:8px;color:#333">' + disk.title + '</div>';
+                    const canvas = document.createElement('canvas');
+                    canvas.id = 'chart-' + metric.key + '-' + idx;
+                    canvas.style.maxHeight = '280px';
+                    wrap.appendChild(canvas);
+                    section.appendChild(wrap);
 
-                new Chart(canvas, {
-                    type: graphData.type,
-                    data: {
-                        labels: graphData.labels,
-                        datasets: graphData.datasets
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: true,
-                        plugins: {
-                            legend: {
-                                position: 'top',
-                            },
+                    new Chart(canvas, {
+                        type: 'bar',
+                        data: {
+                            labels: labels,
+                            datasets: [
+                                { label: 'Read',  data: readData,  backgroundColor: 'rgba(37,99,235,0.75)', borderWidth: 1 },
+                                { label: 'Write', data: writeData, backgroundColor: 'rgba(220,38,38,0.75)', borderWidth: 1 },
+                            ]
                         },
-                        scales: {
-                            y: {
-                                beginAtZero: true
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: true,
+                            plugins: { legend: { position: 'top' } },
+                            scales: {
+                                y: {
+                                    min: yMin * 1.1,
+                                    max: yMax * 1.1,
+                                    ticks: { callback: v => { const a = Math.abs(v); return a >= 1000 ? (a/1000).toFixed(1)+'k' : a.toFixed(0); } }
+                                },
+                                x: { ticks: { maxRotation: 45, minRotation: 30 } }
                             }
                         }
-                    }
+                    });
                 });
             });
         }

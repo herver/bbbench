@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -83,12 +84,14 @@ func newWebServer(addr string) *http.Server {
 	mux.HandleFunc("/api/results", handleResultsList)
 	mux.HandleFunc("/api/results/detail", handleResultDetail)
 	mux.HandleFunc("/api/results/graphs", handleResultGraphs)
+	mux.HandleFunc("/api/results/summary", handleResultSummaryAPI)
 
 	// HTML pages
 	mux.HandleFunc("/status", handleStatusPage)
 	mux.HandleFunc("/results", handleBrowsePage)
 	mux.HandleFunc("/result", handleResultDetailPage)
 	mux.HandleFunc("/graphs", handleGraphsPage)
+	mux.HandleFunc("/summary", handleSummaryPage)
 	mux.HandleFunc("/export", handleExportHTML)
 	mux.HandleFunc("/", handleIndex)
 
@@ -99,6 +102,57 @@ func newWebServer(addr string) *http.Server {
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
+}
+
+// navbarCSS is embedded in every page's <style> block.
+const navbarCSS = `
+        nav.topnav {
+            background: #1e293b;
+            display: flex;
+            align-items: center;
+            padding: 0 24px;
+            height: 52px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        }
+        nav.topnav .brand {
+            color: #fff;
+            font-weight: 700;
+            font-size: 18px;
+            text-decoration: none;
+            margin-right: 32px;
+            letter-spacing: 0.3px;
+            flex-shrink: 0;
+        }
+        nav.topnav .nav-links { display: flex; gap: 4px; }
+        nav.topnav a.nav-link {
+            color: #94a3b8;
+            text-decoration: none;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            transition: background 0.15s, color 0.15s;
+        }
+        nav.topnav a.nav-link:hover { background: #334155; color: #e2e8f0; }
+        nav.topnav a.nav-link.active { background: #2563eb; color: #fff; }
+`
+
+// navbarHTML returns the top navigation bar, marking the given path as active.
+func navbarHTML(active string) string {
+	link := func(href, label string) string {
+		cls := "nav-link"
+		if href == active {
+			cls += " active"
+		}
+		return fmt.Sprintf(`<a href="%s" class="%s">%s</a>`, href, cls, label)
+	}
+	return fmt.Sprintf(`<nav class="topnav">
+    <a class="brand" href="/">bbbench</a>
+    <div class="nav-links">%s%s%s</div>
+</nav>`, link("/", "Home"), link("/status", "Status"), link("/results", "Results"))
 }
 
 // handleHealth responds to health check requests.
@@ -121,56 +175,48 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 <head>
     <title>bbbench - Block Device Benchmark</title>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+        * { box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
+            margin: 0;
+            padding: 0;
             background: #f5f5f5;
         }
-        .header {
-            background: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        h1 {
-            margin: 0;
-            color: #333;
-        }
-        .subtitle {
-            color: #666;
-            margin-top: 5px;
+        .page-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 24px 20px;
         }
         .content {
             background: #fff;
-            padding: 20px;
+            padding: 24px;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
+        h2 { margin-top: 0; color: #333; }
+        code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
+        %s
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>bbbench</h1>
-        <div class="subtitle">Block Device Benchmark Tool</div>
-    </div>
-    <div class="content">
-        <h2>Welcome</h2>
-        <p>The web interface is running.</p>
-        <h3>Available Pages:</h3>
-        <ul>
-            <li><a href="/status">Status</a> - View current benchmark execution status</li>
-            <li><a href="/results">Browse Results</a> - Browse and search benchmark results</li>
-            <li><a href="/api/results">Results API</a> - List all benchmark results (JSON)</li>
-            <li><a href="/health">Health</a> - Server health check</li>
-        </ul>
-        <p>Use the CLI to start benchmarks: <code>bbbench orchestrator</code></p>
+%s
+    <div class="page-content">
+        <div class="content">
+            <h2>Welcome</h2>
+            <p>The web interface is running.</p>
+            <h3>Available Pages:</h3>
+            <ul>
+                <li><a href="/status">Status</a> - View current benchmark execution status</li>
+                <li><a href="/results">Browse Results</a> - Browse and search benchmark results</li>
+                <li><a href="/api/results">Results API</a> - List all benchmark results (JSON)</li>
+            </ul>
+            <p>Use the CLI to start benchmarks: <code>bbbench orchestrator</code></p>
+        </div>
     </div>
 </body>
-</html>`)
+</html>`, navbarCSS, navbarHTML("/"))
 }
 
 // getListenAddr extracts the actual listening address from the server.
@@ -235,6 +281,43 @@ func loadBenchmarkSummary(path string) error {
 	var summary BenchmarkResult
 	if err := json.Unmarshal(data, &summary); err != nil {
 		return fmt.Errorf("unmarshal json: %w", err)
+	}
+
+	// If phases have fio output files but no parsed jobs (old summary format),
+	// read and parse the fio JSON files now to populate job stats for graphs.
+	// Also attempt to backfill time-series from log files if present.
+	for i := range summary.Phases {
+		phase := &summary.Phases[i]
+		if len(phase.Jobs) == 0 && len(phase.FioFiles) > 0 {
+			for device, fioPath := range phase.FioFiles {
+				data, err := os.ReadFile(fioPath)
+				if err != nil {
+					logger.Debug("read fio output for summary backfill", "file", fioPath, "err", err)
+					continue
+				}
+				jobs, err := parseFioJSON(data)
+				if err != nil {
+					logger.Debug("parse fio json for summary backfill", "file", fioPath, "err", err)
+					continue
+				}
+				for j := range jobs {
+					jobs[j].Device = device
+				}
+				phase.Jobs = append(phase.Jobs, jobs...)
+			}
+		}
+		// Backfill time-series from log files if not already present
+		if phase.LogSeries == nil && len(phase.FioFiles) > 0 {
+			for device, fioPath := range phase.FioFiles {
+				logPrefix := strings.TrimSuffix(fioPath, ".json") + "_log"
+				if ts := parseFioLogFiles(logPrefix); ts != nil {
+					if phase.LogSeries == nil {
+						phase.LogSeries = make(map[string]*DeviceTimeSeries)
+					}
+					phase.LogSeries[device] = ts
+				}
+			}
+		}
 	}
 
 	// Add to global results store

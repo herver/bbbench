@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -118,27 +119,17 @@ func handleStatusPage(w http.ResponseWriter, r *http.Request) {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+        * { box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
+            margin: 0;
+            padding: 0;
             background: #f5f5f5;
         }
-        .header {
-            background: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        h1 {
-            margin: 0;
-            color: #333;
-        }
-        .subtitle {
-            color: #666;
-            margin-top: 5px;
+        .page-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 24px 20px;
         }
         .status-card {
             background: #fff;
@@ -219,14 +210,13 @@ func handleStatusPage(w http.ResponseWriter, r *http.Request) {
             padding: 40px;
             color: #999;
         }
+        __NAVBAR_CSS__
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>bbbench</h1>
-        <div class="subtitle">Benchmark Status</div>
-    </div>
-
+__NAVBAR_HTML__
+    <div class="page-content">
+    <h2 style="margin: 0 0 16px; color: #333; font-size: 20px;">Benchmark Status</h2>
     <div class="status-card">
         <h2>Current Status</h2>
         <div id="status-info">
@@ -351,8 +341,11 @@ func handleStatusPage(w http.ResponseWriter, r *http.Request) {
         updateStatus();
         setInterval(updateStatus, 2000);
     </script>
+    </div>
 </body>
 </html>`
+	html = strings.ReplaceAll(html, "__NAVBAR_CSS__", navbarCSS)
+	html = strings.ReplaceAll(html, "__NAVBAR_HTML__", navbarHTML("/status"))
 
 	w.Write([]byte(html))
 }

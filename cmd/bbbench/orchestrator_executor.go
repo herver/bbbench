@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -31,6 +33,7 @@ type ExecutionCoordinator struct {
 	stateFile   string
 	resumeState *ExecutionState
 	startTime   time.Time
+	liveResult  *BenchmarkResult // updated after each phase for live web view
 }
 
 // FioResult represents the result of a single fio execution.
@@ -39,6 +42,7 @@ type FioResult struct {
 	JobName    string
 	Phase      int
 	OutputPath string
+	LogPrefix  string // base prefix for fio time-series log files
 	JsonOutput []byte
 	Error      error
 	StartTime  time.Time
@@ -182,6 +186,146 @@ func (ec *ExecutionCoordinator) unregisterTempFile(path string) {
 	}
 }
 
+// parseFioLogFiles reads all three fio log types for a given prefix and returns
+// time-series data, or nil if no log files exist.
+func parseFioLogFiles(prefix string) *DeviceTimeSeries {
+	ts := &DeviceTimeSeries{
+		IOPS: parseFioSingleLog(prefix, "iops", 1.0),       // IOPS as-is
+		BW:   parseFioSingleLog(prefix, "bw", 1.0/1024.0),  // KiB/s → MB/s
+		Lat:  parseFioSingleLog(prefix, "lat", 1.0/1000.0), // ns → µs
+	}
+	if len(ts.IOPS) == 0 && len(ts.BW) == 0 && len(ts.Lat) == 0 {
+		return nil
+	}
+	return ts
+}
+
+// parseFioSingleLog parses fio log files matching <prefix>_<kind>.*.log.
+// Lines format: time_ms, value, direction(0=R 1=W 2=T), block_size, offset, ...
+func parseFioSingleLog(prefix, kind string, scale float64) []TimePoint {
+	files, _ := filepath.Glob(prefix + "_" + kind + ".*.log")
+	if len(files) == 0 {
+		// Legacy fio: no job number suffix
+		alt := prefix + "_" + kind + ".log"
+		if _, err := os.Stat(alt); err == nil {
+			files = []string{alt}
+		}
+	}
+	if len(files) == 0 {
+		return nil
+	}
+
+	type bucket struct{ rSum, wSum float64 }
+	buckets := make(map[int64]*bucket)
+
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			parts := strings.SplitN(line, ",", 5)
+			if len(parts) < 3 {
+				continue
+			}
+			tms, err1 := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
+			val, err2 := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+			dir, err3 := strconv.Atoi(strings.TrimSpace(parts[2]))
+			if err1 != nil || err2 != nil || err3 != nil {
+				continue
+			}
+			if buckets[tms] == nil {
+				buckets[tms] = &bucket{}
+			}
+			v := val * scale
+			switch dir {
+			case 0:
+				buckets[tms].rSum += v
+			case 1:
+				buckets[tms].wSum += v
+			}
+		}
+	}
+
+	if len(buckets) == 0 {
+		return nil
+	}
+
+	times := make([]int64, 0, len(buckets))
+	for t := range buckets {
+		times = append(times, t)
+	}
+	sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
+
+	points := make([]TimePoint, len(times))
+	for i, t := range times {
+		b := buckets[t]
+		points[i] = TimePoint{T: float64(t) / 1000.0, R: b.rSum, W: b.wSum}
+	}
+	return points
+}
+
+// updateLivePhase appends completed phase data to the live result in the store.
+func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
+	if ec.liveResult == nil {
+		return
+	}
+
+	phaseResult := PhaseResult{
+		PhaseNumber: phaseIdx + 1,
+		FioFiles:    make(map[string]string),
+	}
+
+	for _, drive := range ec.drives {
+		deviceName := drive.Device.Name
+		workload := ec.workloads[deviceName]
+		if phaseIdx >= len(workload.Phases) {
+			continue
+		}
+		phase := workload.Phases[phaseIdx]
+		if len(phase) == 0 {
+			continue
+		}
+
+		for _, result := range ec.results[deviceName] {
+			if result.Phase == phaseIdx && result.Error == nil {
+				if result.OutputPath != "" {
+					phaseResult.FioFiles[deviceName] = result.OutputPath
+				}
+				if len(result.JsonOutput) > 0 {
+					jobs, err := parseFioJSON(result.JsonOutput)
+					if err == nil {
+						for j := range jobs {
+							jobs[j].Device = deviceName
+						}
+						phaseResult.Jobs = append(phaseResult.Jobs, jobs...)
+					}
+				}
+				if result.LogPrefix != "" {
+					if ts := parseFioLogFiles(result.LogPrefix); ts != nil {
+						if phaseResult.LogSeries == nil {
+							phaseResult.LogSeries = make(map[string]*DeviceTimeSeries)
+						}
+						phaseResult.LogSeries[deviceName] = ts
+					}
+				}
+				break
+			}
+		}
+
+		if phaseResult.PhaseName == "" && len(phase) > 0 {
+			phaseResult.PhaseName = phase[0].Name
+		}
+	}
+
+	ec.liveResult.Phases = append(ec.liveResult.Phases, phaseResult)
+	globalResultsStore.AddResult(ec.liveResult)
+}
+
 // executeParallelSync runs all drives phase-by-phase with synchronization.
 func (ec *ExecutionCoordinator) executeParallelSync() error {
 	// Find maximum number of phases across all drives
@@ -283,11 +427,22 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 			}
 		})
 
+		// Count active drives so we know when all have finished setup.
+		activeCount := 0
+		for _, drive := range ec.drives {
+			workload := ec.workloads[drive.Device.Name]
+			if phaseIdx < len(workload.Phases) && !ec.isPhaseCompleted(drive.Device.Name, phaseIdx) {
+				activeCount++
+			}
+		}
+
 		var wg sync.WaitGroup
 		var phaseErrors []error
 		var mu sync.Mutex
 
-		startTime := time.Now()
+		// setupDone is buffered so goroutines never block signalling readiness.
+		setupDone := make(chan struct{}, activeCount)
+		startGate := make(chan struct{})
 
 		for _, drive := range ec.drives {
 			workload := ec.workloads[drive.Device.Name]
@@ -307,7 +462,7 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 				defer wg.Done()
 
 				phase := wl.Phases[idx]
-				result := ec.executePhase(drv, phase, idx)
+				result := ec.executePhase(drv, phase, idx, setupDone, startGate)
 
 				ec.mu.Lock()
 				ec.results[drv.Device.Name] = append(ec.results[drv.Device.Name], result)
@@ -321,13 +476,22 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 			}(drive, workload, phaseIdx)
 		}
 
+		// Wait for all goroutines to finish setup, then open the gate so all
+		// fio processes start at the same time.
+		for i := 0; i < activeCount; i++ {
+			<-setupDone
+		}
+		startTime := time.Now()
+		close(startGate)
+
 		wg.Wait()
 		elapsed := time.Since(startTime)
 
-		// Update completed phases count
+		// Update completed phases count and live result
 		UpdateStatus(func(s *BenchmarkStatus) {
 			s.CompletedPhases = phaseIdx + 1
 		})
+		ec.updateLivePhase(phaseIdx)
 
 		if len(phaseErrors) > 0 {
 			fmt.Printf("FAILED (%.1fs) - errors:\n", elapsed.Seconds())
@@ -349,6 +513,16 @@ func (ec *ExecutionCoordinator) executeParallelSync() error {
 	ec.cleanup()
 	ec.cleanupStateFile()
 	fmt.Println("\nAll phases complete!")
+
+	// Mark all drives as complete
+	UpdateStatus(func(s *BenchmarkStatus) {
+		s.Running = false
+		for i := range s.Drives {
+			s.Drives[i].Status = "complete"
+			s.Drives[i].PhaseName = ""
+		}
+	})
+
 	return nil
 }
 
@@ -459,7 +633,7 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 				}
 			})
 
-			result := ec.executePhase(drive, phase, phaseIdx)
+			result := ec.executePhase(drive, phase, phaseIdx, nil, nil)
 
 			ec.mu.Lock()
 			ec.results[drive.Device.Name] = append(ec.results[drive.Device.Name], result)
@@ -472,11 +646,12 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 				fmt.Printf("COMPLETE (%.1fs)\n", elapsed.Seconds())
 			}
 
-			// Update completed phases count
+			// Update completed phases count and live result
 			completedPhases++
 			UpdateStatus(func(s *BenchmarkStatus) {
 				s.CompletedPhases = completedPhases
 			})
+			ec.updateLivePhase(phaseIdx)
 
 			// Save state after each phase
 			if err := ec.saveState(); err != nil {
@@ -504,15 +679,22 @@ func (ec *ExecutionCoordinator) executeSequential() error {
 	ec.cleanup()
 	ec.cleanupStateFile()
 	fmt.Println("All drives complete!")
+
+	UpdateStatus(func(s *BenchmarkStatus) {
+		s.Running = false
+	})
+
 	return nil
 }
 
 // executePhase executes a single phase for a single drive.
-func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, phaseIdx int) *FioResult {
+// setupDone and startGate are used to synchronize parallel launches: the
+// goroutine signals setupDone after writing the temp file, then waits on
+// startGate before starting fio. Pass nil channels for sequential execution.
+func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, phaseIdx int, setupDone chan<- struct{}, startGate <-chan struct{}) *FioResult {
 	result := &FioResult{
 		DeviceName: drive.Device.Name,
 		Phase:      phaseIdx,
-		StartTime:  time.Now(),
 	}
 
 	// Get first job name for logging
@@ -522,11 +704,21 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 
 	workload := ec.workloads[drive.Device.Name]
 
+	// signalReady signals setup done and waits for the start gate.
+	// Always called before returning to avoid deadlock when using a gate.
+	signalReady := func() {
+		if setupDone != nil {
+			setupDone <- struct{}{}
+			<-startGate
+		}
+	}
+
 	// Build temporary fio file for this phase
 	phaseFioContent := buildPhaseFioFile(workload, phase)
 	tmpFile, err := os.CreateTemp("", fmt.Sprintf("bbbench-phase-%s-*.fio", drive.Device.Name))
 	if err != nil {
 		result.Error = fmt.Errorf("create temp fio file: %w", err)
+		signalReady()
 		result.EndTime = time.Now()
 		return result
 	}
@@ -540,21 +732,31 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 	if _, err := tmpFile.WriteString(phaseFioContent); err != nil {
 		tmpFile.Close()
 		result.Error = fmt.Errorf("write temp fio file: %w", err)
+		signalReady()
 		result.EndTime = time.Now()
 		return result
 	}
 	tmpFile.Close()
 
-	// Construct output path
+	// Construct output path and log prefix
 	timestamp := time.Now().Unix()
 	outputFile := filepath.Join(ec.outputDir, fmt.Sprintf("%s_phase%d_%d.json",
 		drive.Device.Name, phaseIdx, timestamp))
+	logPrefix := strings.TrimSuffix(outputFile, ".json") + "_log"
 	result.OutputPath = outputFile
+	result.LogPrefix = logPrefix
+
+	// All setup done — wait for start gate so all drives launch fio together.
+	signalReady()
+	result.StartTime = time.Now()
 
 	// Execute fio with context for cancellation support
 	cmd := exec.CommandContext(ec.ctx, "fio",
 		"--output-format=json",
 		"--output="+outputFile,
+		"--write_iops_log="+logPrefix,
+		"--write_bw_log="+logPrefix,
+		"--write_lat_log="+logPrefix,
 		tmpPath)
 
 	if ec.verbose {

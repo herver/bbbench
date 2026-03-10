@@ -181,6 +181,14 @@ func filterJobSection(job FioJob, jobsInPhase map[string]bool) string {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
+		// Strip per-job log file directives; the orchestrator manages log file
+		// paths via command-line flags so these per-job overrides must be removed.
+		if strings.HasPrefix(trimmed, "write_bw_log=") ||
+			strings.HasPrefix(trimmed, "write_iops_log=") ||
+			strings.HasPrefix(trimmed, "write_lat_log=") {
+			continue
+		}
+
 		// Skip wait_for directives that reference jobs not in this phase
 		if strings.HasPrefix(trimmed, "wait_for=") {
 			parts := strings.SplitN(trimmed, "=", 2)
