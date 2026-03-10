@@ -97,7 +97,7 @@ func newSelectionModel(drives []DriveInfo) selectionModel {
 	}
 
 	l := list.New(items, itemDelegate{}, 80, 20)
-	l.Title = "Select drives to benchmark (Space to toggle, Enter to confirm, q to quit)"
+	l.Title = "Select drives to benchmark (Space to toggle, a=all, n=none, i=invert, Enter to confirm, q to quit)"
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(false)
 	l.Styles.Title = titleStyle
@@ -131,8 +131,28 @@ func (m selectionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if _, ok := m.list.SelectedItem().(driveItem); ok {
 				idx := m.list.Index()
 				m.drives[idx].Selected = !m.drives[idx].Selected
-				// Update the list item
 				m.list.SetItem(idx, driveItem{drive: m.drives[idx]})
+			}
+			return m, nil
+
+		case "a": // Select all
+			for i := range m.drives {
+				m.drives[i].Selected = true
+				m.list.SetItem(i, driveItem{drive: m.drives[i]})
+			}
+			return m, nil
+
+		case "n": // Unselect all
+			for i := range m.drives {
+				m.drives[i].Selected = false
+				m.list.SetItem(i, driveItem{drive: m.drives[i]})
+			}
+			return m, nil
+
+		case "i": // Invert selection
+			for i := range m.drives {
+				m.drives[i].Selected = !m.drives[i].Selected
+				m.list.SetItem(i, driveItem{drive: m.drives[i]})
 			}
 			return m, nil
 

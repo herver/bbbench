@@ -602,8 +602,9 @@ __NAVBAR_HTML__
                         legend: { display: true, position: 'top',
                             labels: { boxWidth: 10, font: {size: 10}, padding: 5 } },
                         tooltip: { callbacks: {
+                            title: items => items[0].raw.x + ' s',
                             label: ctx => (ctx.raw.y >= 0 ? 'Read: ' : 'Write: ') +
-                                          fmtTick(ctx.raw.y) + ' ' + metric.unit
+                                          fmtTick(Math.abs(ctx.raw.y)) + ' ' + metric.unit
                         }}
                     },
                     scales: {
@@ -657,24 +658,6 @@ __NAVBAR_HTML__
         }
 
         selMetrics.forEach(metric => {
-            // Compute shared Y scale across all data for this metric.
-            let yMax = 0, yMin = 0;
-            data.forEach(d => {
-                const ts = d[metric.tsKey];
-                if (ts && ts.length > 0) {
-                    ts.forEach(p => {
-                        if (p.r > yMax) yMax = p.r;
-                        if (p.w > 0 && -p.w < yMin) yMin = -p.w;
-                    });
-                } else {
-                    const r = metric.sumR(d), w = metric.sumW(d);
-                    if (r > yMax) yMax = r;
-                    if (w > 0 && -w < yMin) yMin = -w;
-                }
-            });
-            const yHigh = yMax * 1.15 || 1;
-            const yLow  = yMin < 0 ? yMin * 1.15 : 0;
-
             // ── Metric-level foldable section ──
             const section = document.createElement('div');
             section.className = 'metric-section';
@@ -704,6 +687,24 @@ __NAVBAR_HTML__
             phaseOrder.forEach(pname => {
                 const phaseData = byPhase[pname];
                 const diskCount = phaseData.length;
+
+                // Compute Y scale scoped to this (metric, phase) tuple.
+                let yMax = 0, yMin = 0;
+                phaseData.forEach(d => {
+                    const ts = d[metric.tsKey];
+                    if (ts && ts.length > 0) {
+                        ts.forEach(p => {
+                            if (p.r > yMax) yMax = p.r;
+                            if (p.w > 0 && -p.w < yMin) yMin = -p.w;
+                        });
+                    } else {
+                        const r = metric.sumR(d), w = metric.sumW(d);
+                        if (r > yMax) yMax = r;
+                        if (w > 0 && -w < yMin) yMin = -w;
+                    }
+                });
+                const yHigh = yMax * 1.15 || 1;
+                const yLow  = yMin < 0 ? yMin * 1.15 : 0;
 
                 const phaseHdr = document.createElement('div');
                 phaseHdr.className = 'phase-hdr';

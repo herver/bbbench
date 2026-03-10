@@ -190,9 +190,11 @@ func (ec *ExecutionCoordinator) unregisterTempFile(path string) {
 // time-series data, or nil if no log files exist.
 func parseFioLogFiles(prefix string) *DeviceTimeSeries {
 	ts := &DeviceTimeSeries{
-		IOPS: parseFioSingleLog(prefix, "iops", 1.0),       // IOPS as-is
-		BW:   parseFioSingleLog(prefix, "bw", 1.0/1024.0),  // KiB/s → MB/s
-		Lat:  parseFioSingleLog(prefix, "lat", 1.0/1000.0), // ns → µs
+		// IOPS and BW: sum across jobs (each job contributes to total throughput).
+		// Lat: average across jobs (each job's latency is an independent observation).
+		IOPS: parseFioSingleLog(prefix, "iops", 1.0, false),      // IOPS as-is, sum jobs
+		BW:   parseFioSingleLog(prefix, "bw", 1.0/1024.0, false), // KiB/s → MB/s, sum jobs
+		Lat:  parseFioSingleLog(prefix, "lat", 1.0/1000.0, true), // ns → µs, avg jobs
 	}
 	if len(ts.IOPS) == 0 && len(ts.BW) == 0 && len(ts.Lat) == 0 {
 		return nil
@@ -202,7 +204,16 @@ func parseFioLogFiles(prefix string) *DeviceTimeSeries {
 
 // parseFioSingleLog parses fio log files matching <prefix>_<kind>.*.log.
 // Lines format: time_ms, value, direction(0=R 1=W 2=T), block_size, offset, ...
-func parseFioSingleLog(prefix, kind string, scale float64) []TimePoint {
+//
+// fio writes one log entry per I/O (without log_avg_msec) or one entry per
+// averaging window (with log_avg_msec). In both cases, multiple entries in the
+// same file at the same timestamp must be averaged (not summed) because they are
+// repeated samples of the same rate/latency, not independent contributions.
+//
+// avgAcrossFiles controls how per-file averages are combined:
+//   - false (IOPS, BW): sum per-file averages → total across all jobs
+//   - true  (Lat):      average per-file averages → mean latency across jobs
+func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool) []TimePoint {
 	files, _ := filepath.Glob(prefix + "_" + kind + ".*.log")
 	if len(files) == 0 {
 		// Legacy fio: no job number suffix
@@ -215,14 +226,26 @@ func parseFioSingleLog(prefix, kind string, scale float64) []TimePoint {
 		return nil
 	}
 
-	type bucket struct{ rSum, wSum float64 }
-	buckets := make(map[int64]*bucket)
+	// combined[tms] accumulates the per-file averages across all files.
+	type combined struct {
+		rSum, wSum     float64 // sum of per-file averages
+		rFiles, wFiles int     // number of files that contributed (for avgAcrossFiles)
+	}
+	global := make(map[int64]*combined)
+
+	type acc struct {
+		rSum, wSum float64
+		rN, wN     int
+	}
 
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			continue
 		}
+
+		// First pass: collect per-timestamp sums and counts for this file.
+		perTime := make(map[int64]*acc)
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -238,33 +261,68 @@ func parseFioSingleLog(prefix, kind string, scale float64) []TimePoint {
 			if err1 != nil || err2 != nil || err3 != nil {
 				continue
 			}
-			if buckets[tms] == nil {
-				buckets[tms] = &bucket{}
+			a := perTime[tms]
+			if a == nil {
+				a = &acc{}
+				perTime[tms] = a
 			}
 			v := val * scale
 			switch dir {
 			case 0:
-				buckets[tms].rSum += v
+				a.rSum += v
+				a.rN++
 			case 1:
-				buckets[tms].wSum += v
+				a.wSum += v
+				a.wN++
+			}
+		}
+
+		// Second pass: add per-file averages into 1-second buckets.
+		// Coarsening to 1-second resolution ensures that all job files for the
+		// same averaging window (e.g. log_avg_msec=30000) land in the same bucket
+		// regardless of the small timestamp jitter between jobs.
+		for tms, a := range perTime {
+			sec := tms / 1000 // round down to whole second
+			c := global[sec]
+			if c == nil {
+				c = &combined{}
+				global[sec] = c
+			}
+			if a.rN > 0 {
+				c.rSum += a.rSum / float64(a.rN)
+				c.rFiles++
+			}
+			if a.wN > 0 {
+				c.wSum += a.wSum / float64(a.wN)
+				c.wFiles++
 			}
 		}
 	}
 
-	if len(buckets) == 0 {
+	if len(global) == 0 {
 		return nil
 	}
 
-	times := make([]int64, 0, len(buckets))
-	for t := range buckets {
-		times = append(times, t)
+	secs := make([]int64, 0, len(global))
+	for s := range global {
+		secs = append(secs, s)
 	}
-	sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
+	sort.Slice(secs, func(i, j int) bool { return secs[i] < secs[j] })
 
-	points := make([]TimePoint, len(times))
-	for i, t := range times {
-		b := buckets[t]
-		points[i] = TimePoint{T: float64(t) / 1000.0, R: b.rSum, W: b.wSum}
+	points := make([]TimePoint, len(secs))
+	for i, s := range secs {
+		c := global[s]
+		r := c.rSum
+		w := c.wSum
+		if avgAcrossFiles {
+			if c.rFiles > 0 {
+				r /= float64(c.rFiles)
+			}
+			if c.wFiles > 0 {
+				w /= float64(c.wFiles)
+			}
+		}
+		points[i] = TimePoint{T: float64(s), R: r, W: w} // T already in seconds
 	}
 	return points
 }
@@ -757,6 +815,7 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 		"--write_iops_log="+logPrefix,
 		"--write_bw_log="+logPrefix,
 		"--write_lat_log="+logPrefix,
+		"--log_avg_msec=1000",
 		tmpPath)
 
 	if ec.verbose {
