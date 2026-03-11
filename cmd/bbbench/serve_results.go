@@ -219,8 +219,10 @@ func loadFioJSONFile(path string) error {
 	return nil
 }
 
-// parseFioJSON extracts statistics from fio JSON output.
-func parseFioJSON(data []byte) ([]JobResult, error) {
+// parseFioJSON extracts statistics from fio JSON output. source is the file path
+// used in warning logs when fio writes preamble text before the JSON.
+func parseFioJSON(data []byte, source string) ([]JobResult, error) {
+	data = stripFioPrefix(data, source)
 	var fioOutput struct {
 		Jobs []struct {
 			JobName string `json:"jobname"`

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -37,10 +38,31 @@ type FioJsonOutput struct {
 	} `json:"jobs"`
 }
 
-// parseFioJsonOutput parses fio's JSON output.
-func parseFioJsonOutput(jsonData []byte) (*FioJsonOutput, error) {
+// stripFioPrefix removes any non-JSON preamble that fio may write to the output
+// file before the JSON object (e.g. "fio: WARNING: ..."). If source is non-empty,
+// each non-blank preamble line is logged as a warning with its line number.
+func stripFioPrefix(data []byte, source string) []byte {
+	idx := bytes.IndexByte(data, '{')
+	if idx <= 0 {
+		return data
+	}
+	if logger != nil && source != "" {
+		for lineNum, line := range bytes.Split(bytes.TrimRight(data[:idx], "\n"), []byte("\n")) {
+			line = bytes.TrimSpace(line)
+			if len(line) > 0 {
+				logger.Warn("fio output contained non-JSON preamble",
+					"file", source, "line", lineNum+1, "message", string(line))
+			}
+		}
+	}
+	return data[idx:]
+}
+
+// parseFioJsonOutput parses fio's JSON output. source is the file path used in
+// warning logs when fio writes preamble text before the JSON.
+func parseFioJsonOutput(jsonData []byte, source string) (*FioJsonOutput, error) {
 	var output FioJsonOutput
-	if err := json.Unmarshal(jsonData, &output); err != nil {
+	if err := json.Unmarshal(stripFioPrefix(jsonData, source), &output); err != nil {
 		return nil, fmt.Errorf("unmarshal fio json: %w", err)
 	}
 	return &output, nil
@@ -90,7 +112,7 @@ func displayResults(coordinator *ExecutionCoordinator) error {
 			successCount++
 
 			// Parse and display key metrics
-			fioOutput, err := parseFioJsonOutput(result.JsonOutput)
+			fioOutput, err := parseFioJsonOutput(result.JsonOutput, result.OutputPath)
 			if err != nil {
 				fmt.Printf("  Phase %d: WARNING - failed to parse results: %v\n", result.Phase, err)
 				continue

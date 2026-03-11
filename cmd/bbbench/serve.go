@@ -295,7 +295,7 @@ func loadBenchmarkSummary(path string) error {
 					logger.Debug("read fio output for summary backfill", "file", fioPath, "err", err)
 					continue
 				}
-				jobs, err := parseFioJSON(data)
+				jobs, err := parseFioJSON(data, fioPath)
 				if err != nil {
 					logger.Debug("parse fio json for summary backfill", "file", fioPath, "err", err)
 					continue

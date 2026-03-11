@@ -355,7 +355,7 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 					phaseResult.FioFiles[deviceName] = result.OutputPath
 				}
 				if len(result.JsonOutput) > 0 {
-					jobs, err := parseFioJSON(result.JsonOutput)
+					jobs, err := parseFioJSON(result.JsonOutput, result.OutputPath)
 					if err == nil {
 						for j := range jobs {
 							jobs[j].Device = deviceName

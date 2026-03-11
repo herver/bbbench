@@ -163,7 +163,7 @@ func TestParseFioJSON(t *testing.T) {
 		]
 	}`)
 
-	results, err := parseFioJSON(fioJSON)
+	results, err := parseFioJSON(fioJSON, "")
 	if err != nil {
 		t.Fatalf("parseFioJSON failed: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestParseFioJSON(t *testing.T) {
 func TestParseFioJSON_InvalidJSON(t *testing.T) {
 	invalidJSON := []byte(`{invalid json}`)
 
-	_, err := parseFioJSON(invalidJSON)
+	_, err := parseFioJSON(invalidJSON, "")
 	if err == nil {
 		t.Error("Expected error for invalid JSON")
 	}
@@ -234,7 +234,7 @@ func TestParseFioJSON_InvalidJSON(t *testing.T) {
 func TestParseFioJSON_EmptyJobs(t *testing.T) {
 	emptyJSON := []byte(`{"jobs": []}`)
 
-	results, err := parseFioJSON(emptyJSON)
+	results, err := parseFioJSON(emptyJSON, "")
 	if err != nil {
 		t.Fatalf("parseFioJSON failed: %v", err)
 	}
