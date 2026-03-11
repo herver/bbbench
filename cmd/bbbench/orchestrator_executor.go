@@ -34,6 +34,21 @@ type ExecutionCoordinator struct {
 	resumeState *ExecutionState
 	startTime   time.Time
 	liveResult  *BenchmarkResult // updated after each phase for live web view
+	logAvgMsec  int              // fio --log_avg_msec value (0 → default 1000ms)
+}
+
+// coalesceMsec returns the timestamp bucket size used when coalescing log files.
+// It is logAvgMsec/10, with a minimum of 1000ms (1 second).
+func (ec *ExecutionCoordinator) coalesceMsec() int64 {
+	msec := ec.logAvgMsec
+	if msec <= 0 {
+		msec = 1000
+	}
+	threshold := int64(msec) / 10
+	if threshold < 1000 {
+		threshold = 1000
+	}
+	return threshold
 }
 
 // FioResult represents the result of a single fio execution.
@@ -188,13 +203,13 @@ func (ec *ExecutionCoordinator) unregisterTempFile(path string) {
 
 // parseFioLogFiles reads all three fio log types for a given prefix and returns
 // time-series data, or nil if no log files exist.
-func parseFioLogFiles(prefix string) *DeviceTimeSeries {
+func parseFioLogFiles(prefix string, thresholdMs int64) *DeviceTimeSeries {
 	ts := &DeviceTimeSeries{
 		// IOPS and BW: sum across jobs (each job contributes to total throughput).
 		// Lat: average across jobs (each job's latency is an independent observation).
-		IOPS: parseFioSingleLog(prefix, "iops", 1.0, false),      // IOPS as-is, sum jobs
-		BW:   parseFioSingleLog(prefix, "bw", 1.0/1024.0, false), // KiB/s → MB/s, sum jobs
-		Lat:  parseFioSingleLog(prefix, "lat", 1.0/1000.0, true), // ns → µs, avg jobs
+		IOPS: parseFioSingleLog(prefix, "iops", 1.0, false, thresholdMs),      // IOPS as-is, sum jobs
+		BW:   parseFioSingleLog(prefix, "bw", 1.0/1024.0, false, thresholdMs), // KiB/s → MB/s, sum jobs
+		Lat:  parseFioSingleLog(prefix, "lat", 1.0/1000.0, true, thresholdMs), // ns → µs, avg jobs
 	}
 	if len(ts.IOPS) == 0 && len(ts.BW) == 0 && len(ts.Lat) == 0 {
 		return nil
@@ -213,7 +228,7 @@ func parseFioLogFiles(prefix string) *DeviceTimeSeries {
 // avgAcrossFiles controls how per-file averages are combined:
 //   - false (IOPS, BW): sum per-file averages → total across all jobs
 //   - true  (Lat):      average per-file averages → mean latency across jobs
-func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool) []TimePoint {
+func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool, thresholdMs int64) []TimePoint {
 	files, _ := filepath.Glob(prefix + "_" + kind + ".*.log")
 	if len(files) == 0 {
 		// Legacy fio: no job number suffix
@@ -277,23 +292,44 @@ func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool) 
 			}
 		}
 
-		// Second pass: add per-file averages into 1-second buckets.
-		// Coarsening to 1-second resolution ensures that all job files for the
-		// same averaging window (e.g. log_avg_msec=30000) land in the same bucket
-		// regardless of the small timestamp jitter between jobs.
+		// Second pass: coalesce this file's timestamps into per-bucket accumulators,
+		// then commit to global.  Doing it in two steps ensures each file increments
+		// rFiles/wFiles exactly once per bucket, even when multiple sub-interval
+		// timestamps from the same file land in the same bucket (e.g. when
+		// log_avg_msec < thresholdMs).
+		type bucketAcc struct {
+			rSum, wSum float64
+			rN, wN     int
+		}
+		fileBuckets := make(map[int64]*bucketAcc, len(perTime))
 		for tms, a := range perTime {
-			sec := tms / 1000 // round down to whole second
-			c := global[sec]
-			if c == nil {
-				c = &combined{}
-				global[sec] = c
+			bucket := (tms / thresholdMs) * thresholdMs
+			ba := fileBuckets[bucket]
+			if ba == nil {
+				ba = &bucketAcc{}
+				fileBuckets[bucket] = ba
 			}
 			if a.rN > 0 {
-				c.rSum += a.rSum / float64(a.rN)
-				c.rFiles++
+				ba.rSum += a.rSum / float64(a.rN)
+				ba.rN++
 			}
 			if a.wN > 0 {
-				c.wSum += a.wSum / float64(a.wN)
+				ba.wSum += a.wSum / float64(a.wN)
+				ba.wN++
+			}
+		}
+		for bucket, ba := range fileBuckets {
+			c := global[bucket]
+			if c == nil {
+				c = &combined{}
+				global[bucket] = c
+			}
+			if ba.rN > 0 {
+				c.rSum += ba.rSum / float64(ba.rN)
+				c.rFiles++
+			}
+			if ba.wN > 0 {
+				c.wSum += ba.wSum / float64(ba.wN)
 				c.wFiles++
 			}
 		}
@@ -303,15 +339,16 @@ func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool) 
 		return nil
 	}
 
-	secs := make([]int64, 0, len(global))
-	for s := range global {
-		secs = append(secs, s)
+	buckets := make([]int64, 0, len(global))
+	for b := range global {
+		buckets = append(buckets, b)
 	}
-	sort.Slice(secs, func(i, j int) bool { return secs[i] < secs[j] })
+	sort.Slice(buckets, func(i, j int) bool { return buckets[i] < buckets[j] })
 
-	points := make([]TimePoint, len(secs))
-	for i, s := range secs {
-		c := global[s]
+	nFiles := int64(len(files))
+	points := make([]TimePoint, len(buckets))
+	for i, b := range buckets {
+		c := global[b]
 		r := c.rSum
 		w := c.wSum
 		if avgAcrossFiles {
@@ -322,7 +359,10 @@ func parseFioSingleLog(prefix, kind string, scale float64, avgAcrossFiles bool) 
 				w /= float64(c.wFiles)
 			}
 		}
-		points[i] = TimePoint{T: float64(s), R: r, W: w} // T already in seconds
+		// Mark incomplete if any active direction has fewer contributors than expected.
+		incomplete := (c.rFiles > 0 && int64(c.rFiles) < nFiles) ||
+			(c.wFiles > 0 && int64(c.wFiles) < nFiles)
+		points[i] = TimePoint{T: float64(b) / 1000.0, R: r, W: w, Incomplete: incomplete}
 	}
 	return points
 }
@@ -364,7 +404,7 @@ func (ec *ExecutionCoordinator) updateLivePhase(phaseIdx int) {
 					}
 				}
 				if result.LogPrefix != "" {
-					if ts := parseFioLogFiles(result.LogPrefix); ts != nil {
+					if ts := parseFioLogFiles(result.LogPrefix, ec.coalesceMsec()); ts != nil {
 						if phaseResult.LogSeries == nil {
 							phaseResult.LogSeries = make(map[string]*DeviceTimeSeries)
 						}
@@ -808,6 +848,11 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 	signalReady()
 	result.StartTime = time.Now()
 
+	logAvgMsec := ec.logAvgMsec
+	if logAvgMsec <= 0 {
+		logAvgMsec = 1000
+	}
+
 	// Execute fio with context for cancellation support
 	cmd := exec.CommandContext(ec.ctx, "fio",
 		"--output-format=json",
@@ -815,7 +860,7 @@ func (ec *ExecutionCoordinator) executePhase(drive DriveInfo, phase []FioJob, ph
 		"--write_iops_log="+logPrefix,
 		"--write_bw_log="+logPrefix,
 		"--write_lat_log="+logPrefix,
-		"--log_avg_msec=1000",
+		fmt.Sprintf("--log_avg_msec=%d", logAvgMsec),
 		tmpPath)
 
 	if ec.verbose {

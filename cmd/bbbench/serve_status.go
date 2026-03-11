@@ -66,19 +66,38 @@ func UpdateStatus(fn func(*BenchmarkStatus)) {
 	globalStatus.LastUpdate = time.Now()
 }
 
-// GetStatus returns a copy of the current status.
-func GetStatus() BenchmarkStatus {
+// BenchmarkStatusSnapshot is a mutex-free point-in-time copy of BenchmarkStatus,
+// safe to return by value and encode as JSON.
+type BenchmarkStatusSnapshot struct {
+	Running         bool          `json:"running"`
+	StartTime       time.Time     `json:"start_time,omitempty"`
+	Mode            string        `json:"mode,omitempty"`
+	Drives          []DriveStatus `json:"drives,omitempty"`
+	CurrentPhase    int           `json:"current_phase"`
+	TotalPhases     int           `json:"total_phases"`
+	CompletedPhases int           `json:"completed_phases"`
+	LastUpdate      time.Time     `json:"last_update"`
+}
+
+// GetStatus returns a point-in-time snapshot of the current status.
+func GetStatus() BenchmarkStatusSnapshot {
 	globalStatusMu.RLock()
 	defer globalStatusMu.RUnlock()
 
-	// Deep copy to avoid race conditions
-	status := *globalStatus
-	if globalStatus.Drives != nil {
-		status.Drives = make([]DriveStatus, len(globalStatus.Drives))
-		copy(status.Drives, globalStatus.Drives)
+	snap := BenchmarkStatusSnapshot{
+		Running:         globalStatus.Running,
+		StartTime:       globalStatus.StartTime,
+		Mode:            globalStatus.Mode,
+		CurrentPhase:    globalStatus.CurrentPhase,
+		TotalPhases:     globalStatus.TotalPhases,
+		CompletedPhases: globalStatus.CompletedPhases,
+		LastUpdate:      globalStatus.LastUpdate,
 	}
-
-	return status
+	if globalStatus.Drives != nil {
+		snap.Drives = make([]DriveStatus, len(globalStatus.Drives))
+		copy(snap.Drives, globalStatus.Drives)
+	}
+	return snap
 }
 
 // ResetStatus resets the global status to initial state.

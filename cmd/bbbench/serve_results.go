@@ -62,9 +62,10 @@ type LatencyStats struct {
 
 // TimePoint is one data point from a fio time-series log file.
 type TimePoint struct {
-	T float64 `json:"t"` // seconds from phase start
-	R float64 `json:"r"` // read value (IOPS, MB/s, or µs)
-	W float64 `json:"w"` // write value
+	T          float64 `json:"t"`           // seconds from phase start
+	R          float64 `json:"r"`           // read value (IOPS, MB/s, or µs)
+	W          float64 `json:"w"`           // write value
+	Incomplete bool    `json:"i,omitempty"` // true if fewer threads contributed than expected
 }
 
 // DeviceTimeSeries holds per-device time-series log data for one phase.

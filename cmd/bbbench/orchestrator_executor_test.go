@@ -10,7 +10,7 @@ import (
 // 1-second bucket sec=30, and their values are summed (not averaged).
 func TestParseFioSingleLog_IOPS(t *testing.T) {
 	prefix := "testdata/fio_logs/sdg_seq_write_log"
-	pts := parseFioSingleLog(prefix, "iops", 1.0, false)
+	pts := parseFioSingleLog(prefix, "iops", 1.0, false, 1000)
 	if len(pts) == 0 {
 		t.Fatal("expected time points, got none")
 	}
@@ -41,7 +41,7 @@ func TestParseFioSingleLog_IOPS(t *testing.T) {
 // 10 job files are summed and converted to MB/s via scale=1/1024.
 func TestParseFioSingleLog_BW(t *testing.T) {
 	prefix := "testdata/fio_logs/sdg_seq_write_log"
-	pts := parseFioSingleLog(prefix, "bw", 1.0/1024.0, false)
+	pts := parseFioSingleLog(prefix, "bw", 1.0/1024.0, false, 1000)
 	if len(pts) == 0 {
 		t.Fatal("expected time points, got none")
 	}
@@ -72,7 +72,7 @@ func TestParseFioSingleLog_BW(t *testing.T) {
 func TestParseFioSingleLog_Clat(t *testing.T) {
 	prefix := "testdata/fio_logs/sdg_seq_write_log"
 	// The test files are named _clat.*.log; use "clat" as the kind.
-	pts := parseFioSingleLog(prefix, "clat", 1.0/1000.0, true)
+	pts := parseFioSingleLog(prefix, "clat", 1.0/1000.0, true, 1000)
 	if len(pts) == 0 {
 		t.Fatal("expected time points, got none")
 	}
@@ -105,7 +105,7 @@ func TestParseFioSingleLog_Clat(t *testing.T) {
 // a single point at t=30.
 func TestParseFioSingleLog_TimestampBucketing(t *testing.T) {
 	prefix := "testdata/fio_logs/sdg_seq_write_log"
-	pts := parseFioSingleLog(prefix, "iops", 1.0, false)
+	pts := parseFioSingleLog(prefix, "iops", 1.0, false, 1000)
 	if len(pts) == 0 {
 		t.Fatal("expected time points, got none")
 	}
@@ -129,7 +129,7 @@ func TestParseFioSingleLog_TimestampBucketing(t *testing.T) {
 // adjacent 1-second buckets, so the actual count can be slightly above 19.
 func TestParseFioSingleLog_AllPointsPresent(t *testing.T) {
 	prefix := "testdata/fio_logs/sdg_seq_write_log"
-	pts := parseFioSingleLog(prefix, "iops", 1.0, false)
+	pts := parseFioSingleLog(prefix, "iops", 1.0, false, 1000)
 
 	// At least 19 distinct time points must be present.
 	if len(pts) < 19 {
@@ -151,7 +151,7 @@ func TestParseFioSingleLog_AllPointsPresent(t *testing.T) {
 // only iops and bw should be populated from these testdata files.
 func TestParseFioLogFiles_IOPSAndBW(t *testing.T) {
 	prefix := "testdata/fio_logs/sdg_seq_write_log"
-	ts := parseFioLogFiles(prefix)
+	ts := parseFioLogFiles(prefix, 1000)
 	if ts == nil {
 		t.Fatal("parseFioLogFiles returned nil")
 	}
@@ -179,5 +179,144 @@ func TestParseFioLogFiles_IOPSAndBW(t *testing.T) {
 	}
 	if !gotIOPS {
 		t.Error("no IOPS point at t=30")
+	}
+}
+
+// TestParseFioSingleLog_MissingThreadPoint verifies that Incomplete=true is set
+// when one thread's log file is missing an entry that the other files have.
+// The testdata has 3 files; file 2 has no entry in the t≈2s window:
+//
+//	file 1: t=1050, t=2060, t=3070  (write=39,41,38)
+//	file 2: t=1020,          t=3090  (write=40,37)  ← gap at t≈2s
+//	file 3: t=1080, t=2040, t=3050  (write=38,42,40)
+//
+// Expected:
+//
+//	t=1s → 3 contributors → Incomplete=false
+//	t=2s → 2 contributors → Incomplete=true
+//	t=3s → 3 contributors → Incomplete=false
+func TestParseFioSingleLog_MissingThreadPoint(t *testing.T) {
+	prefix := "testdata/fio_logs/missing_pt"
+	pts := parseFioSingleLog(prefix, "iops", 1.0, false, 1000)
+	if len(pts) == 0 {
+		t.Fatal("expected time points, got none")
+	}
+
+	byT := make(map[float64]TimePoint, len(pts))
+	for _, p := range pts {
+		byT[p.T] = p
+	}
+
+	cases := []struct {
+		t              float64
+		wantW          float64
+		wantIncomplete bool
+	}{
+		{1, 39 + 40 + 38, false}, // all 3 files; sum = 117
+		{2, 41 + 42, true},       // only files 1 and 3; sum = 83
+		{3, 38 + 37 + 40, false}, // all 3 files; sum = 115
+	}
+	for _, tc := range cases {
+		p, ok := byT[tc.t]
+		if !ok {
+			t.Errorf("t=%.0f: point not found (got %v)", tc.t, pts)
+			continue
+		}
+		if math.Abs(p.W-tc.wantW) > 0.5 {
+			t.Errorf("t=%.0f: W=%.1f, want %.1f", tc.t, p.W, tc.wantW)
+		}
+		if p.Incomplete != tc.wantIncomplete {
+			t.Errorf("t=%.0f: Incomplete=%v, want %v", tc.t, p.Incomplete, tc.wantIncomplete)
+		}
+	}
+}
+
+// TestParseFioSingleLog_IncompleteFlag verifies that TimePoint.Incomplete is set
+// correctly.  The testdata has 10 job files.  All 10 start within the [30000,
+// 30208] ms window, so the t=30 bucket always has 10 contributors → complete.
+// The last-window timestamps straddle the 540/541 second boundary: 9 files land
+// in bucket 540000 ms and 1 file lands in bucket 541000 ms, so both of those
+// buckets have fewer than 10 contributors → incomplete.
+func TestParseFioSingleLog_IncompleteFlag(t *testing.T) {
+	prefix := "testdata/fio_logs/sdg_seq_write_log"
+	pts := parseFioSingleLog(prefix, "iops", 1.0, false, 1000)
+	if len(pts) == 0 {
+		t.Fatal("expected time points, got none")
+	}
+
+	byT := make(map[float64]TimePoint, len(pts))
+	for _, p := range pts {
+		byT[p.T] = p
+	}
+
+	// t=30 must be complete: all 10 files contribute.
+	p30, ok := byT[30]
+	if !ok {
+		t.Fatal("no point at t=30")
+	}
+	if p30.Incomplete {
+		t.Errorf("t=30: expected Incomplete=false, got true (W=%.0f)", p30.W)
+	}
+
+	// The 540/541 split: at least one of these buckets must exist and be
+	// incomplete.  (Depending on threshold rounding, the exact buckets vary,
+	// but the jitter always produces at least one partial-contributor bucket.)
+	incomplete540 := byT[540].Incomplete
+	incomplete541 := byT[541].Incomplete
+	if !incomplete540 && !incomplete541 {
+		t.Errorf("expected at least one of t=540 or t=541 to be Incomplete=true "+
+			"(540: %v, 541: %v)", byT[540], byT[541])
+	}
+}
+
+// TestParseFioSingleLog_CompletePoints verifies that the well-known mid-phase
+// points (t=60, 90, …, 510) have Incomplete=false: all 10 files contribute to
+// each of these buckets because their timestamps are tightly clustered within a
+// single 1-second window.
+func TestParseFioSingleLog_CompletePoints(t *testing.T) {
+	prefix := "testdata/fio_logs/sdg_seq_write_log"
+	pts := parseFioSingleLog(prefix, "iops", 1.0, false, 1000)
+	if len(pts) == 0 {
+		t.Fatal("expected time points, got none")
+	}
+
+	byT := make(map[float64]TimePoint, len(pts))
+	for _, p := range pts {
+		byT[p.T] = p
+	}
+
+	// t=60 through t=510 in 30-second steps should all be complete.
+	for sec := float64(60); sec <= 510; sec += 30 {
+		p, ok := byT[sec]
+		if !ok {
+			t.Errorf("t=%.0f: point not found", sec)
+			continue
+		}
+		if p.Incomplete {
+			t.Errorf("t=%.0f: expected Incomplete=false, got true (W=%.0f)", sec, p.W)
+		}
+	}
+}
+
+// TestCoalesceMsec verifies the threshold computation: logAvgMsec/10 with a
+// minimum of 1000ms.
+func TestCoalesceMsec(t *testing.T) {
+	cases := []struct {
+		logAvgMsec int
+		want       int64
+	}{
+		{0, 1000},     // 0 → default 1000ms; 1000/10=100 < 1000 → 1000
+		{1000, 1000},  // 1000ms sampling; 1000/10=100 < 1000 → 1000
+		{5000, 1000},  // 5s sampling; 5000/10=500 < 1000 → 1000
+		{10000, 1000}, // 10s sampling; 10000/10=1000 = 1000 → 1000
+		{30000, 3000}, // 30s sampling; 30000/10=3000 > 1000 → 3000
+		{60000, 6000}, // 60s sampling; 60000/10=6000 > 1000 → 6000
+	}
+	for _, c := range cases {
+		ec := &ExecutionCoordinator{logAvgMsec: c.logAvgMsec}
+		got := ec.coalesceMsec()
+		if got != c.want {
+			t.Errorf("coalesceMsec(logAvgMsec=%d) = %d, want %d", c.logAvgMsec, got, c.want)
+		}
 	}
 }

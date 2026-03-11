@@ -172,7 +172,7 @@ func TestHandleStatus(t *testing.T) {
 	}
 
 	// Decode response
-	var status BenchmarkStatus
+	var status BenchmarkStatusSnapshot
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
 		t.Fatalf("Decode failed: %v", err)
 	}

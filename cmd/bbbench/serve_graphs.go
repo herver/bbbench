@@ -392,6 +392,11 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .chart-wrap { position: relative; height: 160px; margin-top: 6px; }
+        .ts-warn {
+            font-size: 10px; color: #92400e; background: #fef3c7;
+            border: 1px solid #fcd34d; border-radius: 3px;
+            padding: 2px 6px; margin-top: 4px;
+        }
         .placeholder {
             display: flex; align-items: center; justify-content: center;
             flex: 1; color: #94a3b8; font-size: 14px; padding: 60px;
@@ -581,6 +586,15 @@ __NAVBAR_HTML__
 
         const ts = d[metric.tsKey];
         if (ts && ts.length > 0) {
+            const incompleteCount = ts.filter(p => p.i).length;
+            if (incompleteCount > 0) {
+                const warn = document.createElement('div');
+                warn.className = 'ts-warn';
+                warn.textContent = '\u26a0 ' + incompleteCount + ' point' +
+                    (incompleteCount !== 1 ? 's are' : ' is') +
+                    ' missing thread contributions';
+                card.appendChild(warn);
+            }
             const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t), y:  p.r}));
             const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t), y: -p.w}));
             const datasets = [];

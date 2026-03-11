@@ -310,7 +310,7 @@ func loadBenchmarkSummary(path string) error {
 		if phase.LogSeries == nil && len(phase.FioFiles) > 0 {
 			for device, fioPath := range phase.FioFiles {
 				logPrefix := strings.TrimSuffix(fioPath, ".json") + "_log"
-				if ts := parseFioLogFiles(logPrefix); ts != nil {
+				if ts := parseFioLogFiles(logPrefix, 1000); ts != nil {
 					if phase.LogSeries == nil {
 						phase.LogSeries = make(map[string]*DeviceTimeSeries)
 					}
