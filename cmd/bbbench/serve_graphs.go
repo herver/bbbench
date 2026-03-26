@@ -382,7 +382,9 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
             background: #fff; border-radius: 8px;
             box-shadow: 0 1px 3px rgba(0,0,0,0.08);
             padding: 10px 12px 8px; display: flex; flex-direction: column;
+            cursor: pointer;
         }
+        .chart-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
         .card-title {
             font-size: 12px; font-weight: 700; color: #1e293b;
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -402,6 +404,30 @@ func handleGraphsPage(w http.ResponseWriter, r *http.Request) {
             flex: 1; color: #94a3b8; font-size: 14px; padding: 60px;
             text-align: center;
         }
+
+        /* ── Modal overlay ── */
+        .modal-overlay {
+            display: none; position: fixed; inset: 0; z-index: 1000;
+            background: rgba(0,0,0,0.65);
+            align-items: center; justify-content: center;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal-card {
+            background: #fff; border-radius: 12px;
+            box-shadow: 0 8px 40px rgba(0,0,0,0.3);
+            padding: 16px 20px 14px;
+            width: calc(100vw - 40px); height: calc(100vh - 40px);
+            display: flex; flex-direction: column;
+        }
+        .modal-card-title  { font-size: 16px; font-weight: 700; color: #1e293b; }
+        .modal-card-subtitle { font-size: 12px; color: #64748b; margin-top: 3px; }
+        .modal-hint { font-size: 11px; color: #94a3b8; margin-top: 4px; }
+        .modal-chart-wrap  { position: relative; flex: 1; margin-top: 10px; }
+        .modal-ts-warn {
+            font-size: 11px; color: #92400e; background: #fef3c7;
+            border: 1px solid #fcd34d; border-radius: 3px;
+            padding: 3px 8px; margin-top: 6px;
+        }
     </style>
 </head>
 <body>
@@ -417,6 +443,18 @@ __NAVBAR_HTML__
     <main class="main" id="main">
         <div class="placeholder">Select filters and click "Show Graphs".</div>
     </main>
+</div>
+
+<div class="modal-overlay" id="modal-overlay">
+    <div class="modal-card" id="modal-card">
+        <div class="modal-card-title" id="modal-title"></div>
+        <div class="modal-card-subtitle" id="modal-subtitle"></div>
+        <div class="modal-hint">Press Esc or click outside to close</div>
+        <div id="modal-ts-warn"></div>
+        <div class="modal-chart-wrap">
+            <canvas id="modal-canvas"></canvas>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -563,37 +601,21 @@ __NAVBAR_HTML__
         hdr.classList.toggle('collapsed', collapsed);
     }
 
-    function makeChartCard(d, metric, cid, yLow, yHigh) {
-        const card = document.createElement('div');
-        card.className = 'chart-card';
-
-        const t1 = document.createElement('div');
-        t1.className = 'card-title';
-        t1.textContent = d.disk;
-        card.appendChild(t1);
-
-        const t2 = document.createElement('div');
-        t2.className = 'card-subtitle';
-        const tech = d.technology ? d.technology.toUpperCase() : '';
-        t2.textContent = [d.vendor, d.model, d.serial, tech].filter(Boolean).join('  \u00b7  ');
-        card.appendChild(t2);
-
-        const wrap = document.createElement('div');
-        wrap.className = 'chart-wrap';
-        const canvas = document.createElement('canvas');
-        wrap.appendChild(canvas);
-        card.appendChild(wrap);
-
+    // makeChart renders a Chart.js instance onto canvas for (d, metric).
+    // Returns the Chart instance. warnEl (optional) will receive a ts-warn message.
+    function makeChart(canvas, d, metric, yLow, yHigh, warnEl) {
         const ts = d[metric.tsKey];
         if (ts && ts.length > 0) {
             const incompleteCount = ts.filter(p => p.i).length;
-            if (incompleteCount > 0) {
-                const warn = document.createElement('div');
-                warn.className = 'ts-warn';
-                warn.textContent = '\u26a0 ' + incompleteCount + ' point' +
-                    (incompleteCount !== 1 ? 's are' : ' is') +
-                    ' missing thread contributions';
-                card.appendChild(warn);
+            if (warnEl) {
+                if (incompleteCount > 0) {
+                    warnEl.className = warnEl.className.includes('modal') ? 'modal-ts-warn' : 'ts-warn';
+                    warnEl.textContent = '\u26a0 ' + incompleteCount + ' point' +
+                        (incompleteCount !== 1 ? 's are' : ' is') +
+                        ' missing thread contributions';
+                } else {
+                    warnEl.textContent = '';
+                }
             }
             const readPts  = ts.filter(p => p.r > 0).map(p => ({x: Math.round(p.t), y:  p.r}));
             const writePts = ts.filter(p => p.w > 0).map(p => ({x: Math.round(p.t), y: -p.w}));
@@ -608,7 +630,7 @@ __NAVBAR_HTML__
                 borderColor: 'rgba(220,38,38,0.9)', backgroundColor: 'rgba(220,38,38,0.07)',
                 fill: 'origin', tension: 0.2, pointRadius: 2, borderWidth: 1.5,
             });
-            charts[cid] = new Chart(canvas, {
+            return new Chart(canvas, {
                 type: 'line', data: { datasets },
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: false,
@@ -637,7 +659,7 @@ __NAVBAR_HTML__
             if (r > 0) { lbls.push('Read');  vals.push(r);  cols.push('rgba(37,99,235,0.75)'); }
             if (w > 0) { lbls.push('Write'); vals.push(-w); cols.push('rgba(220,38,38,0.75)'); }
             if (!lbls.length) { lbls.push('\u2014'); vals.push(0); cols.push('#e2e8f0'); }
-            charts[cid] = new Chart(canvas, {
+            return new Chart(canvas, {
                 type: 'bar',
                 data: { labels: lbls, datasets: [{ data: vals, backgroundColor: cols, borderWidth: 1 }] },
                 options: {
@@ -651,6 +673,71 @@ __NAVBAR_HTML__
                 }
             });
         }
+    }
+
+    // ── Modal ──
+    let modalChart = null;
+
+    function openModal(d, metric, yLow, yHigh) {
+        document.getElementById('modal-title').textContent = d.disk;
+        const tech = d.technology ? d.technology.toUpperCase() : '';
+        document.getElementById('modal-subtitle').textContent =
+            [d.vendor, d.model, d.serial, tech, metric.label].filter(Boolean).join('  \u00b7  ');
+
+        if (modalChart) { modalChart.destroy(); modalChart = null; }
+
+        // Replace canvas to avoid Chart.js "canvas already in use" error.
+        const wrap = document.querySelector('.modal-chart-wrap');
+        const oldCanvas = document.getElementById('modal-canvas');
+        const newCanvas = document.createElement('canvas');
+        newCanvas.id = 'modal-canvas';
+        wrap.replaceChild(newCanvas, oldCanvas);
+
+        const warnEl = document.getElementById('modal-ts-warn');
+        warnEl.className = 'modal-ts-warn';
+        modalChart = makeChart(newCanvas, d, metric, yLow, yHigh, warnEl);
+        document.getElementById('modal-overlay').classList.add('active');
+    }
+
+    function closeModal() {
+        document.getElementById('modal-overlay').classList.remove('active');
+        if (modalChart) { modalChart.destroy(); modalChart = null; }
+    }
+
+    document.getElementById('modal-overlay').addEventListener('click', e => {
+        if (e.target === e.currentTarget) closeModal();
+    });
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') closeModal();
+    });
+
+    function makeChartCard(d, metric, cid, yLow, yHigh) {
+        const card = document.createElement('div');
+        card.className = 'chart-card';
+
+        const t1 = document.createElement('div');
+        t1.className = 'card-title';
+        t1.textContent = d.disk;
+        card.appendChild(t1);
+
+        const t2 = document.createElement('div');
+        t2.className = 'card-subtitle';
+        const tech = d.technology ? d.technology.toUpperCase() : '';
+        t2.textContent = [d.vendor, d.model, d.serial, tech].filter(Boolean).join('  \u00b7  ');
+        card.appendChild(t2);
+
+        const wrap = document.createElement('div');
+        wrap.className = 'chart-wrap';
+        const canvas = document.createElement('canvas');
+        wrap.appendChild(canvas);
+        card.appendChild(wrap);
+
+        const ts = d[metric.tsKey];
+        const warnEl = document.createElement('div');
+        card.appendChild(warnEl);
+        charts[cid] = makeChart(canvas, d, metric, yLow, yHigh, warnEl);
+
+        card.addEventListener('click', () => openModal(d, metric, yLow, yHigh));
         return card;
     }
 

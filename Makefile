@@ -10,7 +10,7 @@ check-config:
 	CGO_ENABLED=1 CC=x86_64-linux-musl-gcc go build -ldflags="-linkmode external -extldflags '-static'" ./cmd/check-config
 
 clean:
-	rm -f bbbench
+	rm -f bbbench check-config
 
 test:
 	go test ./...
