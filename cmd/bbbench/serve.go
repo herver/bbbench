@@ -91,6 +91,7 @@ func newWebServer(addr string) *http.Server {
 	mux.HandleFunc("/results", handleBrowsePage)
 	mux.HandleFunc("/result", handleResultDetailPage)
 	mux.HandleFunc("/graphs", handleGraphsPage)
+	mux.HandleFunc("/compare", handleComparePage)
 	mux.HandleFunc("/summary", handleSummaryPage)
 	mux.HandleFunc("/export", handleExportHTML)
 	mux.HandleFunc("/", handleIndex)

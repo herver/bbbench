@@ -196,6 +196,7 @@ __NAVBAR_HTML__
                         '<a href="/result?id=' + result.id + '">Details</a>' +
                         '<a href="/summary?id=' + result.id + '">Summary</a>' +
                         '<a href="/graphs?id=' + result.id + '">Graphs</a>' +
+                        '<a href="/compare?id=' + result.id + '">Compare</a>' +
                     '</td>' +
                     '</tr>';
             }).join('');
@@ -399,6 +400,7 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
             <div class="actions">
                 <a href="/summary?id=%s" class="btn">Summary</a>
                 <a href="/graphs?id=%s" class="btn">Graphs</a>
+                <a href="/compare?id=%s" class="btn">Compare</a>
                 <a href="/export?id=%s" class="btn btn-secondary">Export HTML</a>
             </div>
         </div>
@@ -449,6 +451,7 @@ func handleResultDetailPage(w http.ResponseWriter, r *http.Request) {
 		result.Timestamp.Format("2006-01-02 15:04:05"),
 		escapeHTML(result.Mode),
 		len(result.Phases),
+		escapeHTML(result.ID),
 		escapeHTML(result.ID),
 		escapeHTML(result.ID),
 		escapeHTML(result.ID),
