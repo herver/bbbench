@@ -21,17 +21,7 @@ type FioConfig struct {
 }
 
 type BBBenchConfig struct {
-	WCE     bool `yaml:"wce"`
-	Default struct {
-		Template struct {
-			Path     string `yaml:"path"`
-			Filename string `yaml:"filename"`
-		} `yaml:"template"`
-		TemplateFioplot struct {
-			Filename string `yaml:"filename"`
-		} `yaml:"template_fioplot"`
-	} `yaml:"default"`
-
+	WCE         bool                   `yaml:"wce"`
 	WorkloadsDB map[string]WorkloadDef `yaml:"workloadsdb"`
 	Workloads   map[string][]string    `yaml:"workloads"`
 }

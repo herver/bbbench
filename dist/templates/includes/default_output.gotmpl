@@ -9,6 +9,7 @@
         numjobs: {{ index .WorkloadDef.Process .ProcessType }}
         bs: {{ .WorkloadDef.Blocksize }}
         rw: "{{ .ProcessType }}"
+        fulldisk: {{ .WorkloadDef.Fulldisk }}
 {{- if ne .WCE nil }}
 {{- $wce := deref .WCE }}
         wce: {{ ternary "True" "False" $wce }}

@@ -3,6 +3,9 @@ filename={{ index .Disk "path" }}
 numjobs={{ index .WorkloadDef.Process .ProcessType }}
 bs={{ .WorkloadDef.Blocksize }}
 rw={{ .ProcessType }}
+{{- if .WorkloadDef.Fulldisk }}
+size=100%
+{{- end }}
 {{- if gt .WorkloadDef.Duration 0 }}
 time_based
 runtime={{ .WorkloadDef.Duration }}
