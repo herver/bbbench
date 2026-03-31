@@ -225,17 +225,23 @@ __NAVBAR_HTML__
         });
     }
 
-    function buildCheckList(ulId, values, selSet) {
+    function isTrimPhase(name) {
+        const n = (name || '').toLowerCase();
+        return n.indexOf('trim') !== -1 || n.indexOf('blkdiscard') !== -1;
+    }
+
+    function buildCheckList(ulId, values, selSet, skipFn) {
         const ul = document.getElementById(ulId);
         ul.innerHTML = '';
         values.forEach(v => {
-            selSet.add(v);
+            const checked = !skipFn || !skipFn(v);
+            if (checked) selSet.add(v);
             const li  = document.createElement('li');
             const lbl = document.createElement('label');
             const cb  = document.createElement('input');
             cb.type    = 'checkbox';
             cb.value   = v;
-            cb.checked = true;
+            cb.checked = checked;
             cb.addEventListener('change', () => {
                 if (cb.checked) selSet.add(v); else selSet.delete(v);
                 updateCount();
@@ -296,7 +302,7 @@ __NAVBAR_HTML__
         buildMetricList();
         buildDiskList();
         const phases = [...new Set(allData.map(d => d.phase_name))].sort();
-        buildCheckList('phase-list', phases, selPhases);
+        buildCheckList('phase-list', phases, selPhases, isTrimPhase);
         updateCount();
     }
 

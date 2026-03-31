@@ -2,8 +2,10 @@ package main
 
 import "fmt"
 
+const version = "0.1.0"
+
 func printHelp() {
-	fmt.Print(`bbbench - fio job generator
+	fmt.Printf(`bbbench %s - fio job generator
 
 Usage:
   bbbench <command> [flags]
@@ -20,5 +22,5 @@ Commands:
 Environment:
   BBBENCH_LOG_LEVEL    debug|info|warn|error
   BBBENCH_DIST_DIR     overrides dist search path
-`)
+`, version)
 }

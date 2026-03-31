@@ -575,13 +575,20 @@ __NAVBAR_HTML__
             li.appendChild(lbl);
             ul.appendChild(li);
         });
-        // Data dims: all values selected by default
+        // Data dims: all values selected by default, except trim phases.
         DATA_DIMS.forEach(dim => {
             const vals = [...new Set(allData.map(d => DIM_F[dim](d)))].sort();
-            vals.forEach(v => SEL[dim].add(v));
+            vals.forEach(v => {
+                if (dim !== 'phase' || !isTrimPhase(v)) SEL[dim].add(v);
+            });
             buildList(dim, vals, false);
         });
         updateCount();
+    }
+
+    function isTrimPhase(name) {
+        const n = (name || '').toLowerCase();
+        return n.indexOf('trim') !== -1 || n.indexOf('blkdiscard') !== -1;
     }
 
     // ── Chart rendering ──
@@ -804,7 +811,7 @@ __NAVBAR_HTML__
                         if (w > 0 && -w < yMin) yMin = -w;
                     }
                 });
-                const yHigh = yMax * 1.15 || 1;
+                const yHigh = yMax > 0 ? yMax * 1.15 : (yMin < 0 ? 0 : 1);
                 const yLow  = yMin < 0 ? yMin * 1.15 : 0;
 
                 const phaseHdr = document.createElement('div');
